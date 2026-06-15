@@ -111,6 +111,7 @@ export interface PrepareLocalReviewDiffOptions {
   requestedDiffType?: DiffType;
   requestedBase?: string;
   configuredDiffType: DiffType;
+  configuredJjDiffType?: DiffType;
   hideWhitespace?: boolean;
 }
 
@@ -380,11 +381,12 @@ export function createVcsApi(providers: readonly VcsProvider[]): VcsApi {
     gitContext: GitContext,
     requestedDiffType: DiffType | undefined,
     configuredDiffType: DiffType,
+    configuredJjDiffType?: DiffType,
   ): DiffType {
     if (requestedDiffType && provider.ownsDiffType(requestedDiffType)) {
       return requestedDiffType;
     }
-    return resolveInitialDiffType(gitContext, configuredDiffType);
+    return resolveInitialDiffType(gitContext, configuredDiffType, configuredJjDiffType);
   }
 
   function resolveInitialBase(
@@ -424,6 +426,7 @@ export function createVcsApi(providers: readonly VcsProvider[]): VcsApi {
         gitContext,
         options.requestedDiffType,
         options.configuredDiffType,
+        options.configuredJjDiffType,
       );
       const base = resolveInitialBase(gitContext, diffType, options.requestedBase, ownsRequestedDiffType);
       const result = await provider.runDiff(diffType, base, gitContext.cwd ?? options.cwd, {
@@ -509,12 +512,18 @@ export function createVcsApi(providers: readonly VcsProvider[]): VcsApi {
 export function resolveInitialDiffType(
   gitContext: GitContext,
   configuredDiffType: DiffType,
+  configuredJjDiffType: DiffType = "jj-current",
 ): DiffType {
   if (gitContext.vcsType === "p4") {
     return "p4-default";
   }
   if (gitContext.vcsType === "jj") {
-    return "jj-current";
+    if (gitContext.diffOptions.some((option) => option.id === configuredJjDiffType)) {
+      return configuredJjDiffType;
+    }
+    if (gitContext.diffOptions.some((option) => option.id === "jj-current")) {
+      return "jj-current";
+    }
   }
   if (gitContext.diffOptions.some((option) => option.id === configuredDiffType)) {
     return configuredDiffType;

@@ -8,8 +8,8 @@
  * Features:
  * - /plannotator command or Ctrl+Alt+P to toggle
  * - --plan flag to start in planning mode
- * - Bash unrestricted during planning (prompt-guided)
- * - Writes restricted to markdown files inside cwd during planning
+ * - Structured planning tools preferred over bash/curl-style exploration
+ * - Writes restricted to markdown files inside cwd or configured external planRoot during planning
  * - plannotator_submit_plan tool with browser-based visual approval
  * - [DONE:n] markers for execution progress tracking
  * - /plannotator-review command for code review
@@ -17,7 +17,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai";
 import type {
@@ -25,7 +25,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
-import { buildPromptVariables, formatTodoList, loadPlannotatorConfig, renderTemplate, resolvePhaseProfile } from "./config.js";
+import { buildPromptVariables, formatTodoList, loadPlannotatorConfig, renderTemplate, resolveJjDefaultDiffType as resolvePiJjDefaultDiffType, resolvePhaseProfile, resolvePlanRoot, type PlannotatorConfig } from "./config.js";
 import {
 	type ChecklistItem,
 	markCompletedSteps,
@@ -83,6 +83,8 @@ import {
 	getToolsForPhase,
 	isPlanWritePathAllowed,
 	PLAN_SUBMIT_TOOL,
+	resolvePlanWritePath,
+	validatePlanningJjTodoInput,
 	type Phase,
 	stripPlanningOnlyTools,
 } from "./tool-scope.ts";
@@ -241,7 +243,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 	let lastSubmittedPath: string | null = null;
 	let checklistItems: ChecklistItem[] = [];
 	let savedState: SavedPhaseState | null = null;
-	let plannotatorConfig = {};
+	let plannotatorConfig: PlannotatorConfig = {};
 	let justApprovedPlan = false;
 
 	pi.on("session_start", (_event, ctx) => {
@@ -267,6 +269,37 @@ export default function plannotator(pi: ExtensionAPI): void {
 			return resolvePhaseProfile(plannotatorConfig, phase);
 		}
 		return undefined;
+	}
+
+	function getResolvedPlanRoot(ctx: ExtensionContext): string | undefined {
+		return resolvePlanRoot(plannotatorConfig, ctx.cwd);
+	}
+
+	function getPlanPathOptions(ctx: ExtensionContext): { planRoot?: string } {
+		const planRoot = getResolvedPlanRoot(ctx);
+		return planRoot ? { planRoot } : {};
+	}
+
+	function formatPlanScope(ctx: ExtensionContext): string {
+		const planRoot = getResolvedPlanRoot(ctx);
+		return planRoot
+			? `inside the working directory or under the configured external plan root (${planRoot})`
+			: "inside the working directory";
+	}
+
+	function sanitizePlanPathComponent(value: string): string {
+		const slug = value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+		return slug || "project";
+	}
+
+	function buildPlanFileGuidance(ctx: ExtensionContext): string {
+		const planRoot = getResolvedPlanRoot(ctx);
+		if (!planRoot) {
+			return "Choose a descriptive markdown plan file inside the working directory, such as PLAN.md for a single focused plan or plans/<short-name>.md when the project keeps multiple plans.";
+		}
+		const projectSlug = sanitizePlanPathComponent(basename(ctx.cwd));
+		const example = join(planRoot, projectSlug, "<session-or-task-slug>.md");
+		return `Use a session-unique markdown plan file under the configured external plan root, preferably ${example}. Do not reuse a fixed PLAN.md when multiple plans may coexist.`;
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -412,7 +445,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 	// ── Commands & Shortcuts ─────────────────────────────────────────────
 
 	pi.registerCommand("plannotator", {
-		description: "Toggle plannotator planning mode",
+		description: "Toggle plannotator planning mode (markdown plans in cwd or configured external planRoot)",
 		handler: async (_args, ctx) => {
 			await togglePlanMode(ctx);
 		},
@@ -438,6 +471,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 					prUrl: reviewArgs.prUrl,
 					vcsType: reviewArgs.vcsType,
 					useLocal: reviewArgs.useLocal,
+					jjDefaultDiffType: resolvePiJjDefaultDiffType(plannotatorConfig),
 				});
 				ctx.ui.notify(sessionOpenedMessage("Code review opened", session.url), "info");
 				void session
@@ -747,14 +781,14 @@ export default function plannotator(pi: ExtensionAPI): void {
 		label: "Submit Plan",
 		description:
 			"Submit your Plannotator plan for user review. " +
-			"Call this only while Plannotator planning mode is active, after writing your plan as a markdown file anywhere inside the working directory. " +
-			"Pass the path to the plan file (e.g. PLAN.md or plans/auth.md). " +
-			"The user will review the plan in a visual browser UI and can approve, deny with feedback, or annotate it. " +
+			"Call this only while Plannotator planning mode is active, after writing your plan as a markdown file in the working directory or configured external planRoot. " +
+			"Pass the path to the session-unique plan file (for example PLAN.md, plans/auth.md, or an external planRoot path). " +
+			"Do not call it before the plan exists on disk. " +
 			"If denied, edit the same file in place, then call this again with the same path.",
 		parameters: Type.Object({
 			filePath: Type.String({
-				description:
-					"Path to the markdown plan file, relative to the working directory. Must end in .md or .mdx and resolve inside cwd.",
+			description:
+				"Path to the markdown plan file. Must end in .md or .mdx and resolve inside cwd or the configured external planRoot.",
 			}),
 		}) as any,
 
@@ -778,26 +812,25 @@ export default function plannotator(pi: ExtensionAPI): void {
 					content: [
 						{
 							type: "text",
-							text: `Error: ${PLAN_SUBMIT_TOOL} requires a filePath argument pointing to your markdown plan file (e.g. "PLAN.md" or "plans/auth.md").`,
+							text: `Error: ${PLAN_SUBMIT_TOOL} requires a filePath argument pointing to your markdown plan file. ${buildPlanFileGuidance(ctx)}`,
 						},
 					],
 					details: { approved: false },
 				};
 			}
 
-			if (!isPlanWritePathAllowed(inputPath, ctx.cwd)) {
+			const fullPath = resolvePlanWritePath(inputPath, ctx.cwd, getPlanPathOptions(ctx));
+			if (!fullPath) {
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Error: plan file must be a markdown file (.md or .mdx) inside the working directory. Rejected: ${inputPath}`,
+							text: `Error: plan file must be a markdown file (.md or .mdx) ${formatPlanScope(ctx)}. Rejected: ${inputPath}`,
 						},
 					],
 					details: { approved: false },
 				};
 			}
-
-			const fullPath = resolve(ctx.cwd, inputPath);
 
 			try {
 				if (!statSync(fullPath).isFile()) {
@@ -952,14 +985,21 @@ export default function plannotator(pi: ExtensionAPI): void {
 	// Gate writes during planning — only markdown files inside cwd.
 	pi.on("tool_call", async (event, ctx) => {
 		if (phase !== "planning") return;
+		if (event.toolName === "jj_todo") {
+			const reason = validatePlanningJjTodoInput(event.input);
+			if (reason) {
+				return { block: true, reason };
+			}
+			return;
+		}
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
 
 		const inputPath = event.input.path as string;
-		if (!isPlanWritePathAllowed(inputPath, ctx.cwd)) {
+		if (!isPlanWritePathAllowed(inputPath, ctx.cwd, getPlanPathOptions(ctx))) {
 			const verb = event.toolName === "write" ? "writes" : "edits";
 			return {
 				block: true,
-				reason: `Plannotator: during planning, ${verb} are limited to markdown files (.md, .mdx) inside the working directory. Blocked: ${inputPath}`,
+				reason: `Plannotator: during planning, ${verb} are limited to markdown files (.md, .mdx) ${formatPlanScope(ctx)}. Blocked: ${inputPath}`,
 			};
 		}
 	});
@@ -971,7 +1011,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 
 		if (phase === "executing" && lastSubmittedPath) {
 			// Re-read from disk each turn to stay current
-			const fullPath = resolve(ctx.cwd, lastSubmittedPath);
+			const fullPath = resolvePlanWritePath(lastSubmittedPath, ctx.cwd, getPlanPathOptions(ctx)) ?? resolve(ctx.cwd, lastSubmittedPath);
 			try {
 				const planContent = readFileSync(fullPath, "utf-8");
 				checklistItems = parseChecklist(planContent);
@@ -1002,6 +1042,8 @@ export default function plannotator(pi: ExtensionAPI): void {
 					completedCount: todoStats.completedCount,
 					totalCount: todoStats.totalCount,
 					remainingCount: todoStats.remainingCount,
+					planRoot: getResolvedPlanRoot(ctx),
+					planFileGuidance: buildPlanFileGuidance(ctx),
 				}),
 			);
 			if (rendered.unknownVariables.length > 0) {
@@ -1019,11 +1061,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 				message: {
 					customType: "plannotator-context",
 					content: `[PLANNOTATOR - PLANNING PHASE]
-You are in plan mode. You MUST NOT make any changes to the codebase — no edits, no commits, no installs, no destructive commands. During planning you may only write or edit markdown files (.md, .mdx) inside the working directory.
+You are in plan mode. You MUST NOT make any changes to the codebase — no code edits, commits, installs, destructive commands, or repository mutations. During planning you may only write or edit markdown files (.md, .mdx) ${formatPlanScope(ctx)}.
 
-Available tools: read, bash, grep, find, ls, write (markdown only), edit (markdown only), ${PLAN_SUBMIT_TOOL}
+Available tools: read, grep, find, ls, ask_user_question, web_search, fetch_content, get_search_content, code_search, jj_context, write (markdown plan files only), edit (markdown plan files only), jj_todo (planning previews only), ${PLAN_SUBMIT_TOOL}. Use bash sparingly for tests/build metadata or external CLIs when a structured tool cannot answer the question.
 
-Do not run destructive bash commands (rm, git push, npm install, etc.) — focus on reading and exploring the codebase. Web fetching (curl, wget) is fine.
+Do not use curl/wget for web research; use the web/content tools instead. jj_todo create/update is allowed only with dryRun: true and fresh: false.
 
 ## Iterative Planning Workflow
 
@@ -1031,15 +1073,17 @@ You are pair-planning with the user. Explore the code to build context, then wri
 
 ### Picking a plan file
 
-Choose a descriptive filename for your plan. Convention: \`PLAN.md\` at the repo root for a single focused plan, or \`plans/<short-name>.md\` for projects that keep multiple plans. Reuse the same filename across revisions of the same plan so version history links up.
+${buildPlanFileGuidance(ctx)}
+
+Choose a descriptive, session-unique filename for new plans so multiple concurrent or historical plans can coexist. Reuse the same filename only when revising the same plan after feedback.
 
 ### The Loop
 
 Repeat this cycle until the plan is complete:
 
-1. **Explore** — Use read, grep, find, ls, and bash to understand the codebase. Actively search for existing functions, utilities, and patterns that can be reused — avoid proposing new code when suitable implementations already exist.
+1. **Explore** — Use read, grep, find, ls, jj_context, and the search/content tools to understand the codebase. Actively search for existing functions, utilities, and patterns that can be reused — avoid proposing new code when suitable implementations already exist.
 2. **Update the plan file** — After each discovery, immediately capture what you learned in the plan. Don't wait until the end. Use write for the initial draft, then edit for all subsequent updates.
-3. **Ask the user** — When you hit an ambiguity or decision you can't resolve from code alone, ask. Then go back to step 1.
+3. **Ask the user** — When you hit an ambiguity or decision you can't resolve from code alone, use ask_user_question when structured choices would be easier for the user; otherwise ask directly. Then go back to step 1.
 
 ### First Turn
 
@@ -1050,6 +1094,7 @@ Start by quickly scanning key files to form an initial understanding of the task
 - Never ask what you could find out by reading the code.
 - Batch related questions together.
 - Focus on things only the user can answer: requirements, preferences, tradeoffs, edge-case priorities.
+- Use ask_user_question for concise option sets when it makes the choice easier to answer.
 - Scale depth to the task — a vague feature request needs many rounds; a focused bug fix may need one or none.
 
 ### Plan File Structure
@@ -1225,7 +1270,7 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 		// Rebuild execution state from disk + session messages
 		if (phase === "executing") {
 			if (lastSubmittedPath) {
-				const fullPath = resolve(ctx.cwd, lastSubmittedPath);
+				const fullPath = resolvePlanWritePath(lastSubmittedPath, ctx.cwd, getPlanPathOptions(ctx)) ?? resolve(ctx.cwd, lastSubmittedPath);
 				if (existsSync(fullPath)) {
 					const content = readFileSync(fullPath, "utf-8");
 					checklistItems = parseChecklist(content);

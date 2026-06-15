@@ -7,7 +7,7 @@ Plannotator integration for the [Pi coding agent](https://github.com/earendil-wo
 **From npm** (recommended):
 
 ```bash
-pi install npm:@plannotator/pi-extension
+pi install npm:@blazed/plannotator-pi-extension
 ```
 
 **From source:**
@@ -20,7 +20,7 @@ pi install ./plannotator/apps/pi-extension
 **Try without installing:**
 
 ```bash
-pi -e npm:@plannotator/pi-extension
+pi -e npm:@blazed/plannotator-pi-extension
 ```
 
 ## Build from source
@@ -45,9 +45,9 @@ Start Pi in plan mode:
 pi --plan
 ```
 
-Or toggle it during a session with `/plannotator` or `Ctrl+Alt+P`. The command accepts an optional file path argument (`/plannotator plans/auth.md`) or prompts you to choose one interactively.
+Or toggle it during a session with `/plannotator` or `Ctrl+Alt+P`. The agent chooses a markdown plan path, or you can pass one explicitly (`/plannotator plans/auth.md`). By default, the planning prompt recommends a session-unique file under `~/.pi/agent/plannotator-plans/<project>/<session-or-task-slug>.md`.
 
-In plan mode the agent is restricted — destructive commands are blocked, writes are limited to the plan file. It explores your codebase, then writes a plan using markdown checklists:
+In plan mode the agent is restricted — destructive commands are blocked, writes are limited to markdown plan files under the working directory or configured external `planRoot` (default `~/.pi/agent/plannotator-plans`). It explores your codebase with structured tools, asks clarifying questions when needed, then writes a plan using markdown checklists:
 
 ```markdown
 - [ ] Add validation to the login form
@@ -68,7 +68,7 @@ The agent iterates on the plan until you approve, then executes with full tool a
 Other Pi extensions can enter, exit, toggle, or query Plannotator plan mode through the shared Pi event bus without invoking the `/plannotator` slash command:
 
 ```ts
-import { PLANNOTATOR_REQUEST_CHANNEL } from "@plannotator/pi-extension/plannotator-events";
+import { PLANNOTATOR_REQUEST_CHANNEL } from "@blazed/plannotator-pi-extension/plannotator-events";
 
 const response = await new Promise((resolve) => {
   pi.events.emit(PLANNOTATOR_REQUEST_CHANNEL, {
@@ -96,6 +96,8 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
 
 ```json
 {
+  "planRoot": "~/.pi/agent/plannotator-plans",
+  "jjDefaultDiffType": "jj-line",
   "defaults": {
     "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
     "thinking": "medium",
@@ -107,9 +109,9 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
     "planning": {
       "model": null,
       "thinking": null,
-      "activeTools": ["grep", "find", "ls", "plannotator_submit_plan"],
+      "activeTools": ["grep", "find", "ls", "ask_user_question", "jj_context", "plannotator_submit_plan"],
       "statusLabel": "⏸ plan",
-      "systemPrompt": "[PLANNING]\nPlan file: ${planFilePath}"
+      "systemPrompt": "[PLANNING]\n${planFileGuidance}"
     },
     "executing": {
       "model": { "provider": "anthropic", "id": "claude-sonnet-4-5" },
@@ -117,9 +119,6 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
       "activeTools": [],
       "statusLabel": "",
       "systemPrompt": "[EXECUTING]\nRemaining steps:\n${todoList}"
-    },
-    "reviewing": {
-      "systemPrompt": "..."
     }
   }
 }
@@ -131,6 +130,8 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
 |--------|------|---------|
 | `defaults` | object | Base values applied to every phase before phase-specific overrides |
 | `phases` | object | Phase-specific overrides |
+| `planRoot` | string \| `null` | External base directory for plan files; defaults to `~/.pi/agent/plannotator-plans`. Planning prompts recommend a sanitized project subdirectory and unique filename under it |
+| `jjDefaultDiffType` | `jj-current` \| `jj-last` \| `jj-line` \| `jj-evolog` \| `jj-all` \| `null` | Default JJ diff view for code review; the built-in Pi config uses `jj-line` |
 | `phases.planning` | object | Settings for planning mode |
 | `phases.executing` | object | Settings for execution mode |
 | `phases.reviewing` | object | Reserved for future review-mode customization |
@@ -145,6 +146,8 @@ Later layers overwrite earlier ones. If a field is omitted, it inherits the valu
 Use these inside `systemPrompt` strings:
 
 - `${planFilePath}` — current plan file path
+- `${planRoot}` — resolved external plan root (default `~/.pi/agent/plannotator-plans`, unless cleared)
+- `${planFileGuidance}` — ready-to-use guidance for choosing the correct plan path
 - `${todoList}` — remaining checklist items as markdown checkboxes
 - `${completedCount}` — completed checklist count
 - `${totalCount}` — total checklist count
@@ -156,6 +159,8 @@ Use these inside `systemPrompt` strings:
 - Unknown template variables trigger a warning in the UI and are rendered as empty strings.
 - `activeTools` are additive with the tools currently active in the session, so Plannotator still preserves tools provided by other extensions.
 - Execution progress remains dynamic (`[DONE:n]` + checklist tracking), even if `statusLabel` is set.
+- `planRoot` defaults to `~/.pi/agent/plannotator-plans`; plan write/edit/submit guards allow markdown files under that external tree in addition to the working directory. Set `planRoot` to `null` or an empty string in a higher-precedence config to clear it. Non-markdown files and path traversal are rejected.
+- Planning prompts prefer structured tools such as `read`, `grep`, `find`, `ls`, `ask_user_question`, search/content tools, and `jj_context`. `jj_todo` is only for planning previews: `create`/`update` must set `dryRun: true` and `fresh: false`.
 
 #### Example files
 
@@ -165,7 +170,7 @@ Use these inside `systemPrompt` strings:
 
 ### Code review
 
-Run `/plannotator-review` to open your current git changes in the code review UI. Annotate specific lines, switch between diff views (uncommitted, staged, last commit, branch), and submit feedback that gets sent to the agent.
+Run `/plannotator-review` to open your current changes in the code review UI. Annotate specific lines, switch between diff views, and submit feedback that gets sent to the agent. In JJ workspaces the built-in Pi config defaults to the `jj-line` diff view. For PR reviews inside a JJ repo, Git local checkout/worktree behavior is intentionally disabled unless you pass `--git`; `--local` alone is not enough.
 
 ### Shared Plannotator event API
 
@@ -209,8 +214,8 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 
 | Command | Description |
 |---------|-------------|
-| `/plannotator` | Toggle plan mode. The agent writes a markdown plan file anywhere in the working directory and submits its path |
-| `/plannotator-review` | Open code review UI for current changes |
+| `/plannotator` | Toggle plan mode. The agent writes a markdown plan file under the working directory or configured external `planRoot`, then submits its path |
+| `/plannotator-review` | Open code review UI for current changes or PRs; in JJ repos use `--git` to intentionally opt into Git local checkout behavior |
 | `/plannotator-annotate <file>` | Open markdown file in annotation UI |
 | `/plannotator-last` | Annotate the last assistant message |
 
@@ -219,6 +224,9 @@ During execution, the agent marks completed steps with `[DONE:n]` markers. Progr
 | Flag | Description |
 |------|-------------|
 | `--plan` | Start in plan mode |
+| `--git` | For review commands, force Git behavior. Required before PR reviews in JJ repos use Git local checkout/worktree behavior |
+| `--local` | For PR review commands, request local checkout in Git mode; in JJ repos this has no effect unless `--git` is also supplied |
+| `--no-local` | For PR review commands, force remote/no-local PR diff behavior |
 
 ## Keyboard shortcuts
 
@@ -232,9 +240,8 @@ The extension manages a state machine: **idle** → **planning** → **executing
 
 During **planning**:
 - All tools from other extensions remain available
-- Bash is unrestricted — the agent is guided by the system prompt not to run destructive commands
-- Writes and edits restricted to the plan file only
-
+- Structured tools are preferred; bash should be used sparingly for tests/build metadata or CLIs when no structured tool fits
+- Writes and edits are restricted to markdown plan files under the working directory or configured `planRoot`
 During **executing**:
 - Full tool access: `read`, `bash`, `edit`, `write`
 - Progress tracked via `[DONE:n]` markers in agent responses

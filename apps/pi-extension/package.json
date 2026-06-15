@@ -1,18 +1,18 @@
 {
-  "name": "@plannotator/pi-extension",
-  "version": "0.20.3",
+  "name": "@blazed/plannotator-pi-extension",
+  "version": "0.20.3-blazed.0",
   "type": "module",
   "description": "Plannotator Pi extension - interactive plan review with annotations, annotate agent messages, and review code/PRs",
-  "author": "backnotprop",
+  "author": "backnotprop, blazed",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/backnotprop/plannotator.git",
+    "url": "git+https://github.com/blazed/plannotator.git",
     "directory": "apps/pi-extension"
   },
-  "homepage": "https://github.com/backnotprop/plannotator",
+  "homepage": "https://github.com/blazed/plannotator/tree/pi-custom/apps/pi-extension",
   "bugs": {
-    "url": "https://github.com/backnotprop/plannotator/issues"
+    "url": "https://github.com/blazed/plannotator/issues"
   },
   "keywords": ["pi-package", "plannotator", "plan-review", "ai-agent", "coding-agent"],
   "pi": {

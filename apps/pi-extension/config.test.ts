@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadPlannotatorConfig, formatTodoList, renderTemplate, resolvePhaseProfile } from "./config";
+import { loadPlannotatorConfig, formatTodoList, renderTemplate, resolveJjDefaultDiffType, resolvePhaseProfile, resolvePlanRoot } from "./config";
 
 const tempDirs: string[] = [];
 const originalHome = process.env.HOME;
@@ -35,7 +35,30 @@ describe("plannotator config", () => {
 
     expect(loaded.warnings).toEqual([]);
     expect(planning.statusLabel).toBe("⏸ plan");
-    expect(planning.activeTools).toEqual(["grep", "find", "ls", "plannotator_submit_plan"]);
+    expect(planning.activeTools).toEqual([
+      "grep",
+      "find",
+      "ls",
+      "ask_user_question",
+      "web_search",
+      "fetch_content",
+      "get_search_content",
+      "code_search",
+      "jj_context",
+      "jj_todo",
+      "plannotator_submit_plan",
+    ]);
+  });
+
+  test("loads Pi defaults for external plan storage and configured JJ review diff", () => {
+    const cwdDir = makeTempDir("plannotator-config-jj-default-");
+    process.env.HOME = makeTempDir("plannotator-config-home-jj-default-");
+
+    const loaded = loadPlannotatorConfig(cwdDir);
+
+    expect(loaded.warnings).toEqual([]);
+    expect(resolveJjDefaultDiffType(loaded.config)).toBe("jj-line");
+    expect(resolvePlanRoot(loaded.config, cwdDir)).toBe(join(process.env.HOME!, ".pi", "agent", "plannotator-plans"));
   });
 
   test("allows a project config to clear an inherited phase with null", () => {
@@ -109,6 +132,78 @@ describe("plannotator config", () => {
     expect(planning.activeTools).toEqual([]);
   });
 
+  test("loads planRoot and jjDefaultDiffType with project precedence", () => {
+    const homeDir = makeTempDir("plannotator-config-home-plans-");
+    const cwdDir = makeTempDir("plannotator-config-cwd-plans-");
+    process.env.HOME = homeDir;
+
+    const globalConfigDir = join(homeDir, ".pi", "agent");
+    const projectConfigDir = join(cwdDir, ".pi");
+    mkdirSync(globalConfigDir, { recursive: true });
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      join(globalConfigDir, "plannotator.json"),
+      JSON.stringify({ planRoot: "~/global-plans", jjDefaultDiffType: "jj-current" }),
+      "utf-8",
+    );
+    writeFileSync(
+      join(projectConfigDir, "plannotator.json"),
+      JSON.stringify({ planRoot: "project-plans", jjDefaultDiffType: "jj-line" }),
+      "utf-8",
+    );
+
+    const loaded = loadPlannotatorConfig(cwdDir);
+
+    expect(loaded.warnings).toEqual([]);
+    expect(resolvePlanRoot(loaded.config, cwdDir)).toBe(join(cwdDir, "project-plans"));
+    expect(resolveJjDefaultDiffType(loaded.config)).toBe("jj-line");
+  });
+
+  test("expands leading home in planRoot and ignores unsupported JJ defaults", () => {
+    const homeDir = makeTempDir("plannotator-config-home-expand-");
+    const cwdDir = makeTempDir("plannotator-config-cwd-expand-");
+    process.env.HOME = homeDir;
+
+    const projectConfigDir = join(cwdDir, ".pi");
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      join(projectConfigDir, "plannotator.json"),
+      JSON.stringify({ planRoot: "~/plans", jjDefaultDiffType: "merge-base" }),
+      "utf-8",
+    );
+
+    const loaded = loadPlannotatorConfig(cwdDir);
+
+    expect(resolvePlanRoot(loaded.config, cwdDir)).toBe(join(homeDir, "plans"));
+    expect(resolveJjDefaultDiffType(loaded.config)).toBe("jj-line");
+  });
+
+  test("allows project config to clear inherited default planRoot and JJ default", () => {
+    const homeDir = makeTempDir("plannotator-config-home-clear-");
+    const cwdDir = makeTempDir("plannotator-config-cwd-clear-");
+    process.env.HOME = homeDir;
+
+    const globalConfigDir = join(homeDir, ".pi", "agent");
+    const projectConfigDir = join(cwdDir, ".pi");
+    mkdirSync(globalConfigDir, { recursive: true });
+    mkdirSync(projectConfigDir, { recursive: true });
+    writeFileSync(
+      join(globalConfigDir, "plannotator.json"),
+      JSON.stringify({ planRoot: "~/global-plans", jjDefaultDiffType: "jj-last" }),
+      "utf-8",
+    );
+    writeFileSync(
+      join(projectConfigDir, "plannotator.json"),
+      JSON.stringify({ planRoot: null, jjDefaultDiffType: null }),
+      "utf-8",
+    );
+
+    const loaded = loadPlannotatorConfig(cwdDir);
+
+    expect(resolvePlanRoot(loaded.config, cwdDir)).toBeUndefined();
+    expect(resolveJjDefaultDiffType(loaded.config)).toBeUndefined();
+  });
+
   test("treats empty strings as clearing values", () => {
     const profile = resolvePhaseProfile(
       {
@@ -140,6 +235,7 @@ describe("plannotator config", () => {
   test("renders prompt templates and reports unknown variables", () => {
     const rendered = renderTemplate("Hello ${name} ${missing}", {
       planFilePath: "PLAN.md",
+      planFileGuidance: "Choose a plan file.",
       todoList: "- [ ] A",
       completedCount: 1,
       totalCount: 2,

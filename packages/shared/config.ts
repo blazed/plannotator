@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { execSync } from "child_process";
 
 export type DefaultDiffType = 'uncommitted' | 'unstaged' | 'staged' | 'merge-base' | 'all';
+export type JjDefaultDiffType = 'jj-current' | 'jj-last' | 'jj-line' | 'jj-evolog' | 'jj-all';
 export type DiffLineBgIntensity = 'subtle' | 'normal' | 'strong';
 
 export interface DiffOptions {
@@ -102,6 +103,7 @@ export function mergePromptConfig(
 export interface PlannotatorConfig {
   displayName?: string;
   diffOptions?: DiffOptions;
+  jjDefaultDiffType?: JjDefaultDiffType | null;
   prompts?: PromptConfig;
   conventionalComments?: boolean;
   /** null = explicitly cleared (use defaults), undefined = not set */
@@ -228,6 +230,14 @@ export function resolveDefaultDiffType(cfg?: PlannotatorConfig): DefaultDiffType
   const v = cfg?.diffOptions?.defaultDiffType as string | undefined;
   if (v === 'branch') return 'merge-base';
   return v === 'uncommitted' || v === 'unstaged' || v === 'staged' || v === 'merge-base' || v === 'all' ? v : 'unstaged';
+}
+
+/**
+ * Read the user's preferred default JJ diff type from config.
+ */
+export function resolveJjDefaultDiffType(cfg?: PlannotatorConfig): JjDefaultDiffType | undefined {
+  const v = cfg?.jjDefaultDiffType as string | null | undefined;
+  return v === 'jj-current' || v === 'jj-last' || v === 'jj-line' || v === 'jj-evolog' || v === 'jj-all' ? v : undefined;
 }
 
 /**

@@ -3,7 +3,9 @@ import {
 	getToolsForPhase,
 	isPlanWritePathAllowed,
 	PLAN_SUBMIT_TOOL,
+	resolvePlanWritePath,
 	stripPlanningOnlyTools,
+	validatePlanningJjTodoInput,
 } from "./tool-scope";
 
 describe("pi plan tool scoping", () => {
@@ -16,6 +18,13 @@ describe("pi plan tool scoping", () => {
 			"grep",
 			"find",
 			"ls",
+			"ask_user_question",
+			"web_search",
+			"fetch_content",
+			"get_search_content",
+			"code_search",
+			"jj_context",
+			"jj_todo",
 			PLAN_SUBMIT_TOOL,
 		]);
 	});
@@ -45,6 +54,14 @@ describe("pi plan tool scoping", () => {
 		]);
 	});
 });
+
+	test("guards jj_todo create and update during planning", () => {
+		expect(validatePlanningJjTodoInput({ action: "list" })).toBeNull();
+		expect(validatePlanningJjTodoInput({ action: "create", dryRun: true, fresh: false })).toBeNull();
+		expect(validatePlanningJjTodoInput({ action: "update", dryRun: true, fresh: false })).toBeNull();
+		expect(validatePlanningJjTodoInput({ action: "create", dryRun: false, fresh: false })).toContain("dryRun: true");
+		expect(validatePlanningJjTodoInput({ action: "update", dryRun: true })).toContain("fresh: false");
+	});
 
 describe("plan write path gate", () => {
 	const cwd = "/r";
@@ -84,5 +101,43 @@ describe("plan write path gate", () => {
 	test("extension check is case-insensitive", () => {
 		expect(isPlanWritePathAllowed("PLAN.MD", cwd)).toBe(true);
 		expect(isPlanWritePathAllowed("notes.MdX", cwd)).toBe(true);
+	});
+
+	test("allows markdown files under configured external plan root", () => {
+		const planRoot = "/external/plans";
+		expect(isPlanWritePathAllowed("/external/plans/repo/session-abc.md", cwd, { planRoot })).toBe(true);
+		expect(isPlanWritePathAllowed("/external/plans/repo/session-abc-2.mdx", cwd, { planRoot })).toBe(true);
+		expect(resolvePlanWritePath("/external/plans/repo/session-abc.md", cwd, { planRoot })).toBe("/external/plans/repo/session-abc.md");
+	});
+
+	test("expands leading home paths only when they stay under the configured plan root", () => {
+		const homeDir = "/home/alice";
+		const planRoot = "/home/alice/.pi/agent/plannotator-plans";
+		expect(isPlanWritePathAllowed("~/.pi/agent/plannotator-plans/project/session.md", cwd, { homeDir, planRoot })).toBe(true);
+		expect(isPlanWritePathAllowed("~bob/plans/session.md", cwd, { homeDir, planRoot })).toBe(false);
+	});
+
+	test("rejects traversal even if it would resolve into the external plan root", () => {
+		const planRoot = "/external/plans";
+		expect(isPlanWritePathAllowed("../external/plans/project/session.md", cwd, { planRoot })).toBe(false);
+		expect(isPlanWritePathAllowed("/external/plans/../plans/project/session.md", cwd, { planRoot })).toBe(false);
+	});
+
+	test("rejects external absolute paths outside cwd and plan root", () => {
+		const planRoot = "/external/plans";
+		expect(isPlanWritePathAllowed("/external/other/session.md", cwd, { planRoot })).toBe(false);
+		expect(isPlanWritePathAllowed("/tmp/leak.md", cwd, { planRoot })).toBe(false);
+	});
+
+	test("allows project subdirectories and unique session filenames under plan root", () => {
+		const planRoot = "/external/plans";
+		expect(isPlanWritePathAllowed("/external/plans/my-project/2026-06-15-auth-plan.md", cwd, { planRoot })).toBe(true);
+		expect(isPlanWritePathAllowed("/external/plans/my-project/2026-06-15-auth-plan-2.md", cwd, { planRoot })).toBe(true);
+	});
+
+	test("applies extension casing checks under plan root", () => {
+		const planRoot = "/external/plans";
+		expect(isPlanWritePathAllowed("/external/plans/project/SESSION.MD", cwd, { planRoot })).toBe(true);
+		expect(isPlanWritePathAllowed("/external/plans/project/SESSION.txt", cwd, { planRoot })).toBe(false);
 	});
 });

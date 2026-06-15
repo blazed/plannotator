@@ -181,7 +181,7 @@ describe("createVcsApi", () => {
     );
   });
 
-  test("prepares JJ local reviews by ignoring Git-shaped requested options", async () => {
+  test("prepares JJ local reviews using configured JJ defaults and ignoring Git-shaped requested options", async () => {
     const jj = provider("jj", true, ["jj-current", "jj-line"], {
       defaultBranch: "trunk()",
       diffOptions: [
@@ -198,6 +198,26 @@ describe("createVcsApi", () => {
       requestedDiffType: "merge-base",
       requestedBase: "main",
       configuredDiffType: "unstaged",
+      configuredJjDiffType: "jj-line",
+    })).resolves.toMatchObject({
+      diffType: "jj-line",
+      base: "trunk()",
+      rawPatch: "jj:jj-line:trunk()",
+    });
+  });
+
+  test("falls back to jj-current when configured JJ default is unavailable", async () => {
+    const jj = provider("jj", true, ["jj-current"], {
+      defaultBranch: "trunk()",
+      diffOptions: [{ id: "jj-current", label: "Current change" }],
+      vcsType: "jj",
+    });
+    const api = createVcsApi([jj]);
+
+    await expect(api.prepareLocalReviewDiff({
+      cwd: "/repo",
+      configuredDiffType: "unstaged",
+      configuredJjDiffType: "jj-line",
     })).resolves.toMatchObject({
       diffType: "jj-current",
       base: "trunk()",

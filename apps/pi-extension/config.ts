@@ -1,11 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 export type PhaseName = "planning" | "executing" | "reviewing";
 export type RuntimePhase = PhaseName | "idle";
+export type JjDefaultDiffType = "jj-current" | "jj-last" | "jj-line" | "jj-evolog" | "jj-all";
 
 export interface PhaseModelRef {
   provider: string;
@@ -30,6 +31,8 @@ export interface PhaseProfile {
 export interface PlannotatorConfig {
   defaults?: PhaseProfile | null;
   phases?: Partial<Record<PhaseName, PhaseProfile | null>>;
+  planRoot?: string | null;
+  jjDefaultDiffType?: JjDefaultDiffType | null;
 }
 
 export interface LoadedPlannotatorConfig {
@@ -47,6 +50,8 @@ export interface ResolvedPhaseProfile {
 
 export interface PromptVariables {
   planFilePath: string;
+  planRoot?: string;
+  planFileGuidance: string;
   todoList: string;
   completedCount: number;
   totalCount: number;
@@ -62,6 +67,7 @@ export interface PromptRenderResult {
 const INTERNAL_CONFIG_PATH = join(dirname(fileURLToPath(import.meta.url)), "plannotator.json");
 const PHASES: PhaseName[] = ["planning", "executing", "reviewing"];
 const THINKING_LEVELS = new Set<string>(["minimal", "low", "medium", "high", "xhigh"]);
+const JJ_DIFF_TYPES = new Set<JjDefaultDiffType>(["jj-current", "jj-last", "jj-line", "jj-evolog", "jj-all"]);
 
 function getAgentConfigDir(): string {
   const envDir = process.env.PI_CODING_AGENT_DIR;
@@ -124,6 +130,20 @@ function normalizePrompt(value: unknown): string | null | undefined {
   return value.length > 0 ? value : null;
 }
 
+function normalizeStringValue(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeJjDefaultDiffType(value: unknown): JjDefaultDiffType | null | undefined {
+  if (value === null) return null;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return JJ_DIFF_TYPES.has(trimmed as JjDefaultDiffType) ? (trimmed as JjDefaultDiffType) : undefined;
+}
+
 function normalizeProfile(raw: unknown): PhaseProfile | null | undefined {
   if (raw === null) return null;
   if (!isRecord(raw)) return undefined;
@@ -171,6 +191,8 @@ function mergeConfig(base: PlannotatorConfig, override: PlannotatorConfig): Plan
   return {
     defaults: mergeProfile(base.defaults, override.defaults),
     phases: Object.keys(phases).length > 0 ? phases : undefined,
+    planRoot: override.planRoot !== undefined ? override.planRoot : base.planRoot,
+    jjDefaultDiffType: override.jjDefaultDiffType !== undefined ? override.jjDefaultDiffType : base.jjDefaultDiffType,
   };
 }
 
@@ -185,6 +207,8 @@ function loadConfigSource(path: string): { config: PlannotatorConfig; warning?: 
 
   const config: PlannotatorConfig = {};
   if ("defaults" in raw) config.defaults = normalizeProfile(raw.defaults);
+  if ("planRoot" in raw) config.planRoot = normalizeStringValue(raw.planRoot);
+  if ("jjDefaultDiffType" in raw) config.jjDefaultDiffType = normalizeJjDefaultDiffType(raw.jjDefaultDiffType);
 
   if ("phases" in raw && isRecord(raw.phases)) {
     const phases: Partial<Record<PhaseName, PhaseProfile | null>> = {};
@@ -260,9 +284,29 @@ function resolveString(base: string | null | undefined, override: string | null 
   return base ?? undefined;
 }
 
+function expandLeadingHome(path: string): string {
+  if (path === "~") return process.env.HOME || process.env.USERPROFILE || homedir();
+  if (path.startsWith("~/") || path.startsWith("~\\")) {
+    return join(process.env.HOME || process.env.USERPROFILE || homedir(), path.slice(2));
+  }
+  return path;
+}
+
+export function resolvePlanRoot(config: PlannotatorConfig, cwd: string): string | undefined {
+  const planRoot = config.planRoot;
+  if (planRoot === undefined || planRoot === null) return undefined;
+  return resolve(cwd, expandLeadingHome(planRoot));
+}
+
+export function resolveJjDefaultDiffType(config: PlannotatorConfig): JjDefaultDiffType | undefined {
+  return config.jjDefaultDiffType ?? undefined;
+}
+
 export function buildPromptVariables(options: {
   planFilePath: string;
   phase: RuntimePhase;
+  planRoot?: string;
+  planFileGuidance?: string;
   totalCount: number;
   completedCount: number;
   remainingCount?: number;
@@ -274,6 +318,8 @@ export function buildPromptVariables(options: {
 
   return {
     planFilePath: options.planFilePath,
+    planRoot: options.planRoot,
+    planFileGuidance: options.planFileGuidance ?? "Choose a descriptive markdown plan file path inside the working directory.",
     todoList: options.todoList ?? "",
     completedCount,
     totalCount,

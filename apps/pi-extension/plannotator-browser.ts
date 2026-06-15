@@ -33,7 +33,7 @@ import {
 } from "./generated/pr-provider.js";
 import { parseRemoteUrl } from "./generated/repo.js";
 import { fetchRef, createWorktree, removeWorktree, ensureObjectAvailable } from "./generated/worktree.js";
-import { loadConfig, resolveDefaultDiffType, resolveSharingEnabled } from "./generated/config.js";
+import { loadConfig, resolveDefaultDiffType, resolveJjDefaultDiffType, resolveSharingEnabled } from "./generated/config.js";
 import {
 	WorkspaceReviewSession,
 	type WorkspaceDiffType,
@@ -103,7 +103,7 @@ async function openBrowserForServer(serverUrl: string, ctx: ExtensionContext): P
 
 async function buildLocalWorkspaceReview(
 	root: string,
-	options: { requestedDiffType?: DiffType | WorkspaceDiffType; configuredDiffType?: DiffType; hideWhitespace?: boolean } = {},
+	options: { requestedDiffType?: DiffType | WorkspaceDiffType; configuredDiffType?: DiffType; configuredJjDiffType?: DiffType; hideWhitespace?: boolean } = {},
 ): Promise<WorkspaceReviewSession> {
 	return WorkspaceReviewSession.create({
 		getVcsContext,
@@ -217,13 +217,15 @@ export async function openPlanReviewBrowser(
 	return session.waitForDecision();
 }
 
-export function shouldUseLocalPrCheckout(options: { useLocal?: boolean }): boolean {
-	return options.useLocal !== false;
+export function shouldUseLocalPrCheckout(options: { useLocal?: boolean; vcsType?: VcsSelection; detectedVcsType?: VcsSelection }): boolean {
+	if (options.useLocal === false) return false;
+	if (options.detectedVcsType === "jj" && options.vcsType !== "git") return false;
+	return true;
 }
 
 export async function openCodeReview(
 	ctx: ExtensionContext,
-	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string; vcsType?: VcsSelection; useLocal?: boolean } = {},
+	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string; vcsType?: VcsSelection; useLocal?: boolean; jjDefaultDiffType?: DiffType } = {},
 ): Promise<{ approved: boolean; feedback?: string; annotations?: unknown[]; agentSwitch?: string; exit?: boolean }> {
 	const session = await startCodeReviewBrowserSession(ctx, options);
 	return session.waitForDecision();
@@ -231,7 +233,7 @@ export async function openCodeReview(
 
 export async function startCodeReviewBrowserSession(
 	ctx: ExtensionContext,
-	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string; vcsType?: VcsSelection; useLocal?: boolean } = {},
+	options: { cwd?: string; defaultBranch?: string; diffType?: DiffType; prUrl?: string; vcsType?: VcsSelection; useLocal?: boolean; jjDefaultDiffType?: DiffType } = {},
 ): Promise<
 	BrowserDecisionSession<{
 		approved: boolean;
@@ -294,12 +296,14 @@ export async function startCodeReviewBrowserSession(
 		prMetadata = pr.metadata;
 		prPatchIncomplete = pr.patchIncomplete ?? false;
 
-		if (shouldUseLocalPrCheckout(options)) {
-			// Create local worktree for agent file access (--local is the default for PR reviews)
+		const repoDir = options.cwd ?? ctx.cwd;
+		const detectedPrVcs = await detectManagedVcs(repoDir, "auto").catch(() => null);
+		if (shouldUseLocalPrCheckout({ ...options, detectedVcsType: detectedPrVcs?.vcsType })) {
+			// Create local worktree for agent file access. In JJ repos this intentionally
+			// requires --git because it uses Git checkout/worktree behavior.
 			let localPath: string | undefined;
 			let sessionDir: string | undefined;
 			try {
-				const repoDir = options.cwd ?? ctx.cwd;
 				const identifier = prMetadata.platform === "github"
 					? `${prMetadata.owner}-${prMetadata.repo}-${prMetadata.number}`
 					: `${prMetadata.projectPath.replace(/\//g, "-")}-${prMetadata.iid}`;
@@ -430,6 +434,7 @@ export async function startCodeReviewBrowserSession(
 		const cwd = options.cwd ?? ctx.cwd;
 		const config = loadConfig();
 		const managedVcs = await detectManagedVcs(cwd, options.vcsType);
+		const configuredJjDiffType = options.jjDefaultDiffType ?? resolveJjDefaultDiffType(config);
 		const forcedVcs = !!options.vcsType && options.vcsType !== "auto";
 		if (managedVcs || forcedVcs) {
 			const result = await prepareLocalReviewDiff({
@@ -438,6 +443,7 @@ export async function startCodeReviewBrowserSession(
 				requestedDiffType: options.diffType,
 				requestedBase: options.defaultBranch,
 				configuredDiffType: resolveDefaultDiffType(config),
+				configuredJjDiffType,
 				hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
 			});
 			gitCtx = result.gitContext;
@@ -453,6 +459,7 @@ export async function startCodeReviewBrowserSession(
 			workspace = await buildLocalWorkspaceReview(cwd, {
 				requestedDiffType: options.diffType,
 				configuredDiffType: resolveDefaultDiffType(config),
+				configuredJjDiffType,
 				hideWhitespace: config.diffOptions?.hideWhitespace ?? false,
 			});
 			if (workspace.repos.length === 0) {
