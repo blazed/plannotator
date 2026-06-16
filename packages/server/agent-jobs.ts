@@ -13,8 +13,9 @@ import { formatPiJsonLogEvent } from "./pi-review";
 import {
   type AgentJobInfo,
   type AgentJobEvent,
-  type AgentCapability,
   type AgentCapabilities,
+  buildAgentCapabilities,
+  parsePiListModelsOutput,
   isTerminalStatus,
   jobSource,
   serializeAgentSSEEvent,
@@ -107,17 +108,18 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
   let version = 0;
 
   // --- Capability detection (run once) ---
-  const capabilities: AgentCapability[] = [
-    { id: "claude", name: "Claude Code", available: !!Bun.which("claude") },
-    { id: "codex", name: "Codex CLI", available: !!Bun.which("codex") },
-    { id: "pi", name: "Pi", available: !!Bun.which("pi") },
-    { id: "tour", name: "Code Tour", available: !!Bun.which("claude") || !!Bun.which("codex") },
-  ];
-  const capabilitiesResponse: AgentCapabilities = {
-    mode,
-    providers: capabilities,
-    available: capabilities.some((c) => c.available),
-  };
+  const claudeAvailable = !!Bun.which("claude");
+  const codexAvailable = !!Bun.which("codex");
+  const piAvailable = !!Bun.which("pi");
+  const piModels = piAvailable ? detectPiModels() : [];
+  const capabilitiesResponse = buildAgentCapabilities(mode, {
+      claude: claudeAvailable,
+      codex: codexAvailable,
+      pi: piAvailable,
+    },
+    { pi: { models: piModels } },
+  );
+  const capabilities = capabilitiesResponse.providers;
 
   // --- SSE broadcasting ---
   function broadcast(event: AgentJobEvent): void {
@@ -256,7 +258,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
                     }
                     continue;
                   }
-                  if (provider === "pi") {
+                  // Pi review jobs use provider="pi"; Pi tour jobs use
+                  // provider="tour" with engine="pi".
+                  if (provider === "pi" || spawnOptions?.engine === "pi") {
                     const formatted = formatPiJsonLogEvent(line);
                     if (formatted !== null) {
                       broadcast({ type: "job:log", jobId: id, delta: formatted });
@@ -550,4 +554,17 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
       return null;
     },
   };
+}
+
+function detectPiModels() {
+  try {
+    const result = Bun.spawnSync(["pi", "--list-models"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (result.exitCode !== 0) return [];
+    return parsePiListModelsOutput(new TextDecoder().decode(result.stdout));
+  } catch {
+    return [];
+  }
 }

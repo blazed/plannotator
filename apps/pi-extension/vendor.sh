@@ -33,6 +33,7 @@ for f in tour-review; do
     | sed 's|from "\.\./vcs"|from "./review-core.js"|' \
     | sed 's|from "\.\./pr"|from "./pr-provider.js"|' \
     | sed 's|from "\.\./agent-review-message"|from "./agent-review-message.js"|' \
+    | sed 's|from "\.\./pi-review"|from "./pi-review.js"|' \
     | sed 's|from "@plannotator/shared/tour"|from "./tour.js"|' \
     | sed 's|from "@plannotator/shared/data-dir"|from "./data-dir"|' \
     > "generated/$f.ts"

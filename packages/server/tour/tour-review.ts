@@ -5,6 +5,7 @@ import { getPlannotatorDataDir } from "@plannotator/shared/data-dir";
 import type { DiffType } from "../vcs";
 import type { PRMetadata } from "../pr";
 import { buildWorkspacePromptContextLines, getLocalDiffInstruction, type WorkspaceReviewPromptContext } from "../agent-review-message";
+import { buildPiCommand, cleanupPiPromptFile, extractFinalPiAssistantText, parsePiCandidateJson } from "../pi-review";
 import type {
   CodeTourOutput,
   TourDiffAnchor,
@@ -16,6 +17,7 @@ import type {
 export type { CodeTourOutput, TourDiffAnchor, TourKeyTakeaway, TourStop, TourQAItem };
 
 export const TOUR_EMPTY_OUTPUT_ERROR = "Tour generation returned empty or malformed output";
+export type TourEngine = "claude" | "codex" | "pi";
 
 export const TOUR_SCHEMA_JSON = JSON.stringify({
   type: "object",
@@ -337,6 +339,37 @@ export function buildTourUserMessage(
   ].join("\n");
 }
 
+export function buildPiTourUserMessage(
+  patch: string,
+  diffType: DiffType,
+  options?: { defaultBranch?: string; hasLocalAccess?: boolean; prDiffScope?: string; workspace?: WorkspaceReviewPromptContext },
+  prMetadata?: PRMetadata,
+): string {
+  const generic = buildTourUserMessage(patch, diffType, options, prMetadata);
+  const includesPatch = generic.includes("```diff") || generic.includes(patch);
+  const piNote = [
+    "Pi read-only tour constraints:",
+    "- You may inspect local files with read, grep, find, and ls only.",
+    "- Do not run git or jj commands; those commands are not available for this Pi tour job.",
+    "- If any generic instruction above mentions git or jj, treat it as context for other tour engines and use the inline diff below instead.",
+  ];
+
+  if (includesPatch) {
+    return [generic, "", ...piNote].join("\n");
+  }
+
+  return [
+    generic,
+    "",
+    ...piNote,
+    "- The full diff for this tour is supplied inline here:",
+    "",
+    "```diff",
+    patch,
+    "```",
+  ].join("\n");
+}
+
 function buildWorkspaceTourUserMessage(
   patch: string,
   workspace: WorkspaceReviewPromptContext,
@@ -448,6 +481,15 @@ export async function buildTourCodexCommand(options: {
   return command;
 }
 
+function normalizeTourOutput(value: unknown): CodeTourOutput | null {
+  if (!value || typeof value !== "object") return null;
+  const output = value as Partial<CodeTourOutput>;
+  // A tour with no stops isn't a tour — treat as invalid so the UI
+  // error state fires instead of rendering an empty walkthrough.
+  if (!Array.isArray(output.stops) || output.stops.length === 0) return null;
+  return value as CodeTourOutput;
+}
+
 export function parseTourStreamOutput(stdout: string): CodeTourOutput | null {
   if (!stdout.trim()) return null;
 
@@ -460,11 +502,7 @@ export function parseTourStreamOutput(stdout: string): CodeTourOutput | null {
       const event = JSON.parse(line);
       if (event.type === 'result') {
         if (event.is_error) return null;
-        const output = event.structured_output;
-        // A tour with no stops isn't a tour — treat as invalid so the UI
-        // error state fires instead of rendering an empty walkthrough.
-        if (!output || !Array.isArray(output.stops) || output.stops.length === 0) return null;
-        return output as CodeTourOutput;
+        return normalizeTourOutput(event.structured_output);
       }
     } catch {
       // Not valid JSON — skip
@@ -479,15 +517,16 @@ export async function parseTourFileOutput(outputPath: string): Promise<CodeTourO
     const text = await readFile(outputPath, "utf-8");
     try { await unlink(outputPath); } catch { /* ignore */ }
     if (!text.trim()) return null;
-    const parsed = JSON.parse(text);
-    // A tour with no stops isn't a tour — treat as invalid so the UI
-    // error state fires instead of rendering an empty walkthrough.
-    if (!parsed || !Array.isArray(parsed.stops) || parsed.stops.length === 0) return null;
-    return parsed as CodeTourOutput;
+    return normalizeTourOutput(JSON.parse(text));
   } catch {
     try { await unlink(outputPath); } catch { /* ignore */ }
     return null;
   }
+}
+
+export function parseTourPiJsonOutput(stdout: string): CodeTourOutput | null {
+  if (!stdout.trim()) return null;
+  return parsePiCandidateJson(extractFinalPiAssistantText(stdout), normalizeTourOutput);
 }
 
 export interface TourSessionBuildCommandOptions {
@@ -507,8 +546,8 @@ export interface TourSessionBuildCommandResult {
   cwd?: string;
   label?: string;
   prompt?: string;
-  engine: "claude" | "codex";
-  model: string;
+  engine: TourEngine;
+  model?: string;
   effort?: string;
   reasoningEffort?: string;
   fastMode?: boolean;
@@ -548,21 +587,31 @@ export function createTourSession(): TourSession {
     tourChecklists,
 
     async buildCommand({ cwd, patch, diffType, options, prMetadata, config }) {
-      const engine = (typeof config?.engine === "string" ? config.engine : "claude") as "claude" | "codex";
+      const configuredEngine = typeof config?.engine === "string" ? config.engine : "claude";
+      const engine: TourEngine = configuredEngine === "codex" || configuredEngine === "pi" ? configuredEngine : "claude";
       const explicitModel = typeof config?.model === "string" && config.model ? config.model : null;
-      // "sonnet" is a Claude model, so we must NOT pass it to Codex when no model
-      // is explicitly selected. Leave Codex model blank and let its CLI default pick.
-      const model = explicitModel ?? (engine === "codex" ? "" : "sonnet");
+      // "sonnet" is a Claude model, so we must NOT pass it to Codex or Pi when no
+      // model is explicitly selected. Leave those model values blank and let the
+      // CLI defaults pick.
+      const model = explicitModel ?? (engine === "claude" ? "sonnet" : "");
       const reasoningEffort = typeof config?.reasoningEffort === "string" && config.reasoningEffort ? config.reasoningEffort : undefined;
       const effort = typeof config?.effort === "string" && config.effort ? config.effort : undefined;
       const fastMode = config?.fastMode === true;
-      const userMessage = buildTourUserMessage(patch, diffType, options, prMetadata);
+      const userMessage = engine === "pi"
+        ? buildPiTourUserMessage(patch, diffType, options, prMetadata)
+        : buildTourUserMessage(patch, diffType, options, prMetadata);
       const prompt = TOUR_REVIEW_PROMPT + "\n\n---\n\n" + userMessage;
 
       if (engine === "codex") {
         const outputPath = generateTourOutputPath();
         const command = await buildTourCodexCommand({ cwd, outputPath, prompt, model: model || undefined, reasoningEffort, fastMode });
         return { command, outputPath, prompt, label: "Code Tour", engine: "codex", model, reasoningEffort, fastMode: fastMode || undefined };
+      }
+
+      if (engine === "pi") {
+        const piModel = model || undefined;
+        const { command, promptPath } = await buildPiCommand({ cwd, prompt, model: piModel, thinking: effort, name: "Plannotator code tour" });
+        return { command, outputPath: promptPath, prompt, cwd, label: "Code Tour", captureStdout: true, engine: "pi", model: piModel, effort };
       }
 
       const { command, stdinPrompt } = buildTourClaudeCommand(prompt, model, effort);
@@ -573,6 +622,9 @@ export function createTourSession(): TourSession {
       let output: CodeTourOutput | null = null;
       if (job.engine === "codex" && meta.outputPath) {
         output = await parseTourFileOutput(meta.outputPath);
+      } else if (job.engine === "pi") {
+        await cleanupPiPromptFile(meta.outputPath);
+        output = meta.stdout ? parseTourPiJsonOutput(meta.stdout) : null;
       } else if (meta.stdout) {
         output = parseTourStreamOutput(meta.stdout);
       }

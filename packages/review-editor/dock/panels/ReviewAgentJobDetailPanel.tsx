@@ -347,8 +347,8 @@ function StatusDot({ status }: { status: AgentJobInfo['status'] }) {
 function ProviderPill({ provider, engine, model }: { provider: string; engine?: string; model?: string }) {
   let label: string;
   if (provider === 'tour') {
-    const engineLabel = engine === 'codex' ? 'Codex' : 'Claude';
-    label = model && engine !== 'codex' ? `Tour · ${engineLabel} ${model.charAt(0).toUpperCase() + model.slice(1)}` : `Tour · ${engineLabel}`;
+    const engineLabel = engine === 'codex' ? 'Codex' : engine === 'pi' ? 'Pi' : 'Claude';
+    label = model && engine === 'claude' ? `Tour · ${engineLabel} ${model.charAt(0).toUpperCase() + model.slice(1)}` : `Tour · ${engineLabel}`;
   } else {
     label = provider === 'claude' ? 'Claude' : provider === 'codex' ? 'Codex' : provider === 'pi' ? 'Pi' : 'Shell';
   }

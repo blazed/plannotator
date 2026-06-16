@@ -12,8 +12,9 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import {
 	type AgentJobInfo,
 	type AgentJobEvent,
-	type AgentCapability,
 	type AgentCapabilities,
+	buildAgentCapabilities,
+	parsePiListModelsOutput,
 	isTerminalStatus,
 	jobSource,
 	serializeAgentSSEEvent,
@@ -44,6 +45,19 @@ function whichCmd(cmd: string): boolean {
 		return true;
 	} catch {
 		return false;
+	}
+}
+
+function detectPiModels() {
+	try {
+		const output = execFileSync("pi", ["--list-models"], {
+			encoding: "utf-8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 5000,
+		});
+		return parsePiListModelsOutput(output);
+	} catch {
+		return [];
 	}
 }
 
@@ -95,17 +109,18 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 	let version = 0;
 
 	// --- Capability detection (run once) ---
-	const capabilities: AgentCapability[] = [
-		{ id: "claude", name: "Claude Code", available: whichCmd("claude") },
-		{ id: "codex", name: "Codex CLI", available: whichCmd("codex") },
-		{ id: "pi", name: "Pi", available: whichCmd("pi") },
-		{ id: "tour", name: "Code Tour", available: whichCmd("claude") || whichCmd("codex") },
-	];
-	const capabilitiesResponse: AgentCapabilities = {
-		mode,
-		providers: capabilities,
-		available: capabilities.some((c) => c.available),
-	};
+	const claudeAvailable = whichCmd("claude");
+	const codexAvailable = whichCmd("codex");
+	const piAvailable = whichCmd("pi");
+	const piModels = piAvailable ? detectPiModels() : [];
+	const capabilitiesResponse: AgentCapabilities = buildAgentCapabilities(mode, {
+			claude: claudeAvailable,
+			codex: codexAvailable,
+			pi: piAvailable,
+		},
+		{ pi: { models: piModels } },
+	);
+	const capabilities = capabilitiesResponse.providers;
 
 	// --- SSE broadcasting ---
 	function broadcast(event: AgentJobEvent): void {
@@ -196,7 +211,8 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 					const lines = text.split('\n');
 					for (const line of lines) {
 						if (!line.trim()) continue;
-						// Tour jobs with the Claude engine also stream Claude JSONL.
+						// Claude review jobs use provider="claude"; Claude tour jobs use
+						// provider="tour" with engine="claude".
 						if (provider === "claude" || spawnOptions?.engine === "claude") {
 							const formatted = formatClaudeLogEvent(line);
 							if (formatted !== null) {
@@ -204,7 +220,9 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 							}
 							continue;
 						}
-						if (provider === "pi") {
+						// Pi review jobs use provider="pi"; Pi tour jobs use
+						// provider="tour" with engine="pi".
+						if (provider === "pi" || spawnOptions?.engine === "pi") {
 							const formatted = formatPiJsonLogEvent(line);
 							if (formatted !== null) {
 								broadcast({ type: "job:log", jobId: id, delta: formatted });

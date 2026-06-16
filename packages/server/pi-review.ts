@@ -133,6 +133,7 @@ export interface PiCommandOptions {
   prompt: string;
   model?: string;
   thinking?: string;
+  name?: string;
 }
 
 export interface PiCommandResult {
@@ -143,7 +144,7 @@ export interface PiCommandResult {
 
 /** Build the `pi --mode json` argv array and materialize the prompt file. */
 export async function buildPiCommand(options: PiCommandOptions): Promise<PiCommandResult> {
-  const { prompt, model, thinking } = options;
+  const { prompt, model, thinking, name = "Plannotator code review" } = options;
   const promptPath = generatePiPromptPath();
   await writeFile(promptPath, prompt, "utf-8");
 
@@ -152,7 +153,7 @@ export async function buildPiCommand(options: PiCommandOptions): Promise<PiComma
       "pi",
       "--mode", "json",
       "--no-session",
-      "--name", "Plannotator code review",
+      "--name", name,
       "--tools", "read,grep,find,ls",
       "--no-extensions",
       "--no-skills",
@@ -179,7 +180,10 @@ export async function cleanupPiPromptFile(promptPath?: string): Promise<void> {
 
 export function parsePiJsonReviewOutput(stdout: string): PiReviewOutput | null {
   if (!stdout.trim()) return null;
+  return parsePiReviewText(extractFinalPiAssistantText(stdout));
+}
 
+export function extractFinalPiAssistantText(stdout: string): string {
   let finalAssistantText = "";
   let lastMessageEndText = "";
 
@@ -213,15 +217,22 @@ export function parsePiJsonReviewOutput(stdout: string): PiReviewOutput | null {
     }
   }
 
-  return parsePiReviewText(finalAssistantText || lastMessageEndText);
+  return finalAssistantText || lastMessageEndText;
 }
 
 export function parsePiReviewText(text: string): PiReviewOutput | null {
+  return parsePiCandidateJson(text, normalizePiReviewOutput);
+}
+
+export function parsePiCandidateJson<T>(
+  text: string,
+  normalize: (value: unknown) => T | null,
+): T | null {
   const candidates = jsonCandidates(text);
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate);
-      const normalized = normalizePiReviewOutput(parsed);
+      const normalized = normalize(parsed);
       if (normalized) return normalized;
     } catch {
       // Try next candidate

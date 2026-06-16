@@ -6,9 +6,12 @@ import { join } from "node:path";
 import {
   buildTourClaudeCommand,
   buildTourUserMessage,
+  createTourSession,
   parseTourStreamOutput,
   parseTourFileOutput,
+  parseTourPiJsonOutput,
 } from "./tour-review";
+import { cleanupPiPromptFile } from "../pi-review";
 
 const stop = {
   title: "Add retry",
@@ -129,6 +132,34 @@ describe("buildTourUserMessage", () => {
   });
 });
 
+
+describe("parseTourPiJsonOutput", () => {
+  test("extracts final assistant tour JSON from Pi JSON events", () => {
+    const stdout = [
+      JSON.stringify({ type: "session", id: "abc" }),
+      JSON.stringify({
+        type: "agent_end",
+        messages: [
+          { role: "assistant", content: [{ type: "text", text: JSON.stringify(validOutput) }] },
+        ],
+      }),
+    ].join("\n");
+
+    expect(parseTourPiJsonOutput(stdout)).toEqual(validOutput);
+  });
+
+  test("rejects Pi tour output without stops", () => {
+    const stdout = JSON.stringify({
+      type: "agent_end",
+      messages: [
+        { role: "assistant", content: [{ type: "text", text: JSON.stringify({ ...validOutput, stops: [] }) }] },
+      ],
+    });
+
+    expect(parseTourPiJsonOutput(stdout)).toBeNull();
+  });
+});
+
 describe("buildTourClaudeCommand", () => {
   test("allows read-only JJ commands", () => {
     const command = buildTourClaudeCommand("tour").command;
@@ -142,5 +173,34 @@ describe("buildTourClaudeCommand", () => {
     expect(allowedTools).toContain("Bash(jj cat:*)");
     expect(allowedTools).toContain("Bash(jj bookmark list:*)");
     expect(allowedTools).toContain("Bash(git -C:*)");
+  });
+});
+
+
+describe("createTourSession Pi command", () => {
+  test("builds a read-only Pi JSON command with inline diff guidance", async () => {
+    const session = createTourSession();
+    const result = await session.buildCommand({
+      cwd: process.cwd(),
+      patch: "diff --git a/src/a.ts b/src/a.ts\n+const value = 1;\n",
+      diffType: "jj-current",
+      options: { defaultBranch: "trunk()", hasLocalAccess: true },
+      config: { engine: "pi" },
+    });
+
+    try {
+      expect(result.engine).toBe("pi");
+      expect(result.captureStdout).toBe(true);
+      expect(result.model).toBeUndefined();
+      expect(result.command.slice(0, 3)).toEqual(["pi", "--mode", "json"]);
+      expect(result.command).toContain("--tools");
+      expect(result.command[result.command.indexOf("--tools") + 1]).toBe("read,grep,find,ls");
+      expect(result.command[result.command.indexOf("--name") + 1]).toBe("Plannotator code tour");
+      expect(result.prompt).toContain("Do not run git or jj commands");
+      expect(result.prompt).toContain("The full diff for this tour is supplied inline here");
+      expect(result.prompt).toContain("diff --git a/src/a.ts b/src/a.ts");
+    } finally {
+      await cleanupPiPromptFile(result.outputPath);
+    }
   });
 });

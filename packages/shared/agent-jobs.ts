@@ -77,10 +77,24 @@ export interface AgentJobInfo {
   diffContext?: AgentJobDiffContext;
 }
 
+export interface AgentModelOption {
+  /** CLI-ready model id. For Pi this is provider/model, e.g. "openai-codex/gpt-5.5". */
+  value: string;
+  /** Human-readable label for UI dropdowns. */
+  label: string;
+  provider?: string;
+  model?: string;
+  context?: string;
+  maxOutput?: string;
+  thinking?: boolean;
+  images?: boolean;
+}
+
 export interface AgentCapability {
   id: string;
   name: string;
   available: boolean;
+  models?: AgentModelOption[];
 }
 
 export interface AgentCapabilities {
@@ -88,6 +102,75 @@ export interface AgentCapabilities {
   providers: AgentCapability[];
   /** True if at least one provider is available. */
   available: boolean;
+}
+
+export interface AgentBinaryAvailability {
+  claude: boolean;
+  codex: boolean;
+  pi: boolean;
+}
+
+export interface AgentCapabilityDetails {
+  models?: AgentModelOption[];
+}
+
+/** Build the standard agent capability response from detected CLI availability. */
+export function buildAgentCapabilities(
+  mode: AgentCapabilities["mode"],
+  available: AgentBinaryAvailability,
+  details: { pi?: AgentCapabilityDetails } = {},
+): AgentCapabilities {
+  const supportsTour = available.claude || available.codex || available.pi;
+  const providers: AgentCapability[] = [
+    { id: "claude", name: "Claude Code", available: available.claude },
+    { id: "codex", name: "Codex CLI", available: available.codex },
+    {
+      id: "pi",
+      name: "Pi",
+      available: available.pi,
+      ...(details.pi?.models?.length ? { models: details.pi.models } : {}),
+    },
+    { id: "tour", name: "Code Tour", available: supportsTour },
+  ];
+
+  return {
+    mode,
+    providers,
+    available: providers.some((c) => c.available),
+  };
+}
+
+/** Parse `pi --list-models` table output into UI model options. */
+export function parsePiListModelsOutput(output: string): AgentModelOption[] {
+  const rows = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const models: AgentModelOption[] = [];
+
+  for (const row of rows) {
+    if (/^provider\s+model\s+/i.test(row)) continue;
+    const parts = row.split(/\s+/);
+    if (parts.length < 2) continue;
+
+    const [provider, model, context, maxOutput, thinking, images] = parts;
+    if (!provider || !model) continue;
+
+    models.push({
+      value: `${provider}/${model}`,
+      label: `${model} (${provider})`,
+      provider,
+      model,
+      ...(context ? { context } : {}),
+      ...(maxOutput ? { maxOutput } : {}),
+      ...(thinking ? { thinking: thinking.toLowerCase() === "yes" } : {}),
+      ...(images ? { images: images.toLowerCase() === "yes" } : {}),
+    });
+  }
+
+  const seen = new Set<string>();
+  return models.filter((model) => {
+    if (seen.has(model.value)) return false;
+    seen.add(model.value);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,10 @@ export const DEFAULT_TOUR_CLAUDE_EFFORT = 'medium';
 export const DEFAULT_TOUR_CODEX_MODEL = 'gpt-5.3-codex';
 export const DEFAULT_TOUR_CODEX_REASONING = 'medium';
 export const DEFAULT_TOUR_CODEX_FAST = false;
+export const DEFAULT_PI_MODEL = '';
+export const DEFAULT_PI_THINKING = 'high';
+export const DEFAULT_TOUR_PI_MODEL = '';
+export const DEFAULT_TOUR_PI_THINKING = 'medium';
 
 interface ClaudeSection {
   model: string;
@@ -22,6 +26,11 @@ interface ClaudeSection {
 interface CodexSection {
   model: string;
   perModel: Record<string, { reasoning: string; fast: boolean }>;
+}
+
+interface PiSection {
+  model: string;
+  perModel: Record<string, { thinking: string }>;
 }
 
 export type AgentMode = 'review' | 'tour';
@@ -35,6 +44,8 @@ interface AgentSettingsState {
   codex: CodexSection;
   tourClaude: ClaudeSection;
   tourCodex: CodexSection;
+  pi: PiSection;
+  tourPi: PiSection;
 }
 
 const initialState: AgentSettingsState = {
@@ -45,6 +56,8 @@ const initialState: AgentSettingsState = {
   codex: { model: DEFAULT_CODEX_MODEL, perModel: {} },
   tourClaude: { model: DEFAULT_TOUR_CLAUDE_MODEL, perModel: {} },
   tourCodex: { model: DEFAULT_TOUR_CODEX_MODEL, perModel: {} },
+  pi: { model: DEFAULT_PI_MODEL, perModel: {} },
+  tourPi: { model: DEFAULT_TOUR_PI_MODEL, perModel: {} },
 };
 
 // One-shot migration: drop any cached "none" codex reasoning entries. The
@@ -100,6 +113,14 @@ function readCookie(): AgentSettingsState {
       tourCodex: {
         model: typeof parsed.tourCodex?.model === 'string' ? parsed.tourCodex.model : DEFAULT_TOUR_CODEX_MODEL,
         perModel: sanitizeCodexPerModel(parsed.tourCodex?.perModel),
+      },
+      pi: {
+        model: typeof parsed.pi?.model === 'string' ? parsed.pi.model : DEFAULT_PI_MODEL,
+        perModel: parsed.pi?.perModel ?? {},
+      },
+      tourPi: {
+        model: typeof parsed.tourPi?.model === 'string' ? parsed.tourPi.model : DEFAULT_TOUR_PI_MODEL,
+        perModel: parsed.tourPi?.perModel ?? {},
       },
     };
   } catch {
@@ -208,12 +229,53 @@ export function useAgentSettings() {
     [patchCodex],
   );
 
+  const setPiModel = useCallback((model: string) => {
+    setState((s) => ({ ...s, pi: { ...s.pi, model } }));
+  }, []);
+
+  const setTourPiModel = useCallback((model: string) => {
+    setState((s) => ({ ...s, tourPi: { ...s.tourPi, model } }));
+  }, []);
+
+  const patchPi = useCallback(
+    (
+      section: 'pi' | 'tourPi',
+      patch: Partial<{ thinking: string }>,
+      defaults: { thinking: string },
+    ) => {
+      setState((s) => {
+        const cur = s[section];
+        const prev = cur.perModel[cur.model] ?? defaults;
+        return {
+          ...s,
+          [section]: {
+            ...cur,
+            perModel: { ...cur.perModel, [cur.model]: { ...prev, ...patch } },
+          },
+        };
+      });
+    },
+    [],
+  );
+
+  const setPiThinking = useCallback(
+    (thinking: string) => patchPi('pi', { thinking }, { thinking: DEFAULT_PI_THINKING }),
+    [patchPi],
+  );
+
+  const setTourPiThinking = useCallback(
+    (thinking: string) => patchPi('tourPi', { thinking }, { thinking: DEFAULT_TOUR_PI_THINKING }),
+    [patchPi],
+  );
+
   const claudeEffort = state.claude.perModel[state.claude.model]?.effort ?? DEFAULT_CLAUDE_EFFORT;
   const codexReasoning = state.codex.perModel[state.codex.model]?.reasoning ?? DEFAULT_CODEX_REASONING;
   const codexFast = state.codex.perModel[state.codex.model]?.fast ?? DEFAULT_CODEX_FAST;
   const tourClaudeEffort = state.tourClaude.perModel[state.tourClaude.model]?.effort ?? DEFAULT_TOUR_CLAUDE_EFFORT;
   const tourCodexReasoning = state.tourCodex.perModel[state.tourCodex.model]?.reasoning ?? DEFAULT_TOUR_CODEX_REASONING;
   const tourCodexFast = state.tourCodex.perModel[state.tourCodex.model]?.fast ?? DEFAULT_TOUR_CODEX_FAST;
+  const piThinking = state.pi.perModel[state.pi.model]?.thinking ?? DEFAULT_PI_THINKING;
+  const tourPiThinking = state.tourPi.perModel[state.tourPi.model]?.thinking ?? DEFAULT_TOUR_PI_THINKING;
 
   return {
     selectedMode: state.selectedMode,
@@ -229,6 +291,10 @@ export function useAgentSettings() {
     tourCodexModel: state.tourCodex.model,
     tourCodexReasoning,
     tourCodexFast,
+    piModel: state.pi.model,
+    piThinking,
+    tourPiModel: state.tourPi.model,
+    tourPiThinking,
     setSelectedMode,
     setReviewEngine,
     setTourEngine,
@@ -242,5 +308,9 @@ export function useAgentSettings() {
     setTourCodexModel,
     setTourCodexReasoning,
     setTourCodexFast,
+    setPiModel,
+    setPiThinking,
+    setTourPiModel,
+    setTourPiThinking,
   };
 }

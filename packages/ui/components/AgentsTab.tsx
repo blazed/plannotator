@@ -62,6 +62,15 @@ const CODEX_REASONING: Array<{ value: string; label: string }> = [
   { value: 'xhigh', label: 'XHigh' },
 ];
 
+const PI_THINKING: Array<{ value: string; label: string }> = [
+  { value: 'off', label: 'Off' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'XHigh' },
+];
+
 // Tour Claude reuses the same effort levels but offers a different model set.
 const TOUR_CLAUDE_MODELS: Array<{ value: string; label: string }> = [
   { value: 'sonnet', label: 'Sonnet (fast)' },
@@ -82,11 +91,86 @@ const ENGINE_LABEL: Record<AgentEngine, string> = {
 interface AgentsTabProps {
   jobs: AgentJobInfo[];
   capabilities: AgentCapabilities | null;
-  onLaunch: (params: { provider?: string; command?: string[]; label?: string; engine?: string; model?: string; reasoningEffort?: string; effort?: string; fastMode?: boolean }) => void;
+  onLaunch: (params: AgentLaunchParams) => void;
   onKillJob: (id: string) => void;
   onKillAll: () => void;
   externalAnnotations: Array<{ source?: string }>;
   onOpenJobDetail?: (jobId: string) => void;
+}
+
+export type AgentLaunchParams = {
+  provider?: string;
+  command?: string[];
+  label?: string;
+  engine?: string;
+  model?: string;
+  reasoningEffort?: string;
+  effort?: string;
+  fastMode?: boolean;
+};
+
+function providerAvailable(capabilities: AgentCapabilities | null, id: string): boolean {
+  return capabilities?.providers.some((p) => p.id === id && p.available) ?? false;
+}
+
+export function availableReviewEnginesFromCapabilities(capabilities: AgentCapabilities | null): AgentEngine[] {
+  const engines: AgentEngine[] = [];
+  if (providerAvailable(capabilities, 'claude')) engines.push('claude');
+  if (providerAvailable(capabilities, 'codex')) engines.push('codex');
+  if (providerAvailable(capabilities, 'pi')) engines.push('pi');
+  return engines;
+}
+
+export function availableTourEnginesFromCapabilities(capabilities: AgentCapabilities | null): AgentEngine[] {
+  const engines: AgentEngine[] = [];
+  if (providerAvailable(capabilities, 'claude')) engines.push('claude');
+  if (providerAvailable(capabilities, 'codex')) engines.push('codex');
+  if (providerAvailable(capabilities, 'pi')) engines.push('pi');
+  return engines;
+}
+
+export function piModelOptionsFromCapabilities(capabilities: AgentCapabilities | null): Array<{ value: string; label: string }> {
+  const models = capabilities?.providers.find((p) => p.id === 'pi')?.models ?? [];
+  return [
+    { value: '', label: 'Pi default' },
+    ...models.map((model) => ({ value: model.value, label: model.label })),
+  ];
+}
+
+export function buildTourLaunchParams(settings: {
+  tourEngine: AgentEngine;
+  tourClaudeModel: string;
+  tourClaudeEffort: string;
+  tourCodexModel: string;
+  tourCodexReasoning: string;
+  tourCodexFast: boolean;
+  tourPiModel: string;
+  tourPiThinking: string;
+}): AgentLaunchParams {
+  const base: AgentLaunchParams = {
+    provider: 'tour',
+    label: 'Code Tour',
+    engine: settings.tourEngine,
+  };
+
+  if (settings.tourEngine === 'claude') {
+    return { ...base, model: settings.tourClaudeModel, effort: settings.tourClaudeEffort };
+  }
+
+  if (settings.tourEngine === 'codex') {
+    return {
+      ...base,
+      model: settings.tourCodexModel,
+      reasoningEffort: settings.tourCodexReasoning,
+      ...(settings.tourCodexFast && { fastMode: true }),
+    };
+  }
+
+  return {
+    ...base,
+    ...(settings.tourPiModel && { model: settings.tourPiModel }),
+    ...(settings.tourPiThinking && { effort: settings.tourPiThinking }),
+  };
 }
 
 // --- Duration display ---
@@ -148,11 +232,13 @@ function catalogLabel(list: Array<{ value: string; label: string }>, value: stri
 
 function formatModel(provider: string, engine: string | undefined, model: string): string {
   if (provider === 'codex' || engine === 'codex') return catalogLabel(CODEX_MODELS, model);
+  if (provider === 'pi' || engine === 'pi') return model;
   if (provider === 'tour' && engine === 'claude') return catalogLabel(TOUR_CLAUDE_MODELS, model);
   return catalogLabel(CLAUDE_MODELS, model);
 }
 
-function formatEffort(value: string): string {
+function formatEffort(provider: string, engine: string | undefined, value: string): string {
+  if (provider === 'pi' || engine === 'pi') return catalogLabel(PI_THINKING, value);
   return catalogLabel(CLAUDE_EFFORT, value);
 }
 
@@ -309,7 +395,7 @@ function JobCard({
             {job.model && (
               <span className="rounded bg-surface-1 px-1 py-px font-mono">{formatModel(job.provider, job.engine, job.model)}</span>
             )}
-            {job.effort && <span className="rounded bg-surface-1 px-1 py-px">{formatEffort(job.effort)}</span>}
+            {job.effort && <span className="rounded bg-surface-1 px-1 py-px">{formatEffort(job.provider, job.engine, job.effort)}</span>}
             {job.reasoningEffort && <span className="rounded bg-surface-1 px-1 py-px">{formatReasoning(job.reasoningEffort)}</span>}
             {job.fastMode && (
               <span className="rounded bg-amber-500/10 px-1 py-px text-amber-600 dark:text-amber-400">
@@ -382,6 +468,10 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     tourCodexModel,
     tourCodexReasoning,
     tourCodexFast,
+    piModel,
+    piThinking,
+    tourPiModel,
+    tourPiThinking,
     setSelectedMode,
     setReviewEngine,
     setTourEngine,
@@ -395,27 +485,17 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     setTourCodexModel,
     setTourCodexReasoning,
     setTourCodexFast,
+    setPiModel,
+    setPiThinking,
+    setTourPiModel,
+    setTourPiThinking,
   } = settings;
 
-  const claudeAvailable = capabilities?.providers.some((p) => p.id === 'claude' && p.available) ?? false;
-  const codexAvailable = capabilities?.providers.some((p) => p.id === 'codex' && p.available) ?? false;
-  const piAvailable = capabilities?.providers.some((p) => p.id === 'pi' && p.available) ?? false;
-  const tourAvailable = capabilities?.providers.some((p) => p.id === 'tour' && p.available) ?? false;
+  const tourAvailable = providerAvailable(capabilities, 'tour');
 
-  const availableReviewEngines = useMemo<AgentEngine[]>(() => {
-    const engines: AgentEngine[] = [];
-    if (claudeAvailable) engines.push('claude');
-    if (codexAvailable) engines.push('codex');
-    if (piAvailable) engines.push('pi');
-    return engines;
-  }, [claudeAvailable, codexAvailable, piAvailable]);
-
-  const availableTourEngines = useMemo<AgentEngine[]>(() => {
-    const engines: AgentEngine[] = [];
-    if (claudeAvailable) engines.push('claude');
-    if (codexAvailable) engines.push('codex');
-    return engines;
-  }, [claudeAvailable, codexAvailable]);
+  const availableReviewEngines = useMemo<AgentEngine[]>(() => availableReviewEnginesFromCapabilities(capabilities), [capabilities]);
+  const availableTourEngines = useMemo<AgentEngine[]>(() => availableTourEnginesFromCapabilities(capabilities), [capabilities]);
+  const piModelOptions = useMemo(() => piModelOptionsFromCapabilities(capabilities), [capabilities]);
 
   const availableModes = useMemo<AgentMode[]>(() => {
     const modes: AgentMode[] = [];
@@ -491,16 +571,22 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
         ...(codexFast && { fastMode: true }),
       };
     }
-    return { provider: 'pi', label: 'Code Review' };
+    return {
+      provider: 'pi',
+      label: 'Code Review',
+      ...(piModel && { model: piModel }),
+      ...(piThinking && { effort: piThinking }),
+    };
   };
-  const buildTourLaunch = (): LaunchParams => ({
-    provider: 'tour',
-    label: 'Code Tour',
-    engine: tourEngine,
-    model: tourEngine === 'claude' ? tourClaudeModel : tourCodexModel,
-    ...(tourEngine === 'claude'
-      ? { effort: tourClaudeEffort }
-      : { reasoningEffort: tourCodexReasoning, ...(tourCodexFast && { fastMode: true }) }),
+  const buildTourLaunch = (): LaunchParams => buildTourLaunchParams({
+    tourEngine,
+    tourClaudeModel,
+    tourClaudeEffort,
+    tourCodexModel,
+    tourCodexReasoning,
+    tourCodexFast,
+    tourPiModel,
+    tourPiThinking,
   });
 
   const canLaunch = selectedMode === 'review'
@@ -594,9 +680,14 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
                   </>
                 )}
                 {reviewEngine === 'pi' && (
-                  <ConfigRow label="Model">
-                    {renderStaticChoice("Pi default")}
-                  </ConfigRow>
+                  <>
+                    <ConfigRow label="Model" stacked>
+                      <SelectMenu value={piModel} options={piModelOptions} onChange={setPiModel} />
+                    </ConfigRow>
+                    <ConfigRow label="Thinking" stacked>
+                      <SegmentedPicker options={PI_THINKING} value={piThinking} onChange={setPiThinking} />
+                    </ConfigRow>
+                  </>
                 )}
               </>
             )}
@@ -604,13 +695,34 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
             {selectedMode === 'tour' && (
               <>
                 {renderEngineSelect(tourEngine, setTourEngine, tourEngineOptions)}
-                <ConfigRow label="Model" stacked>
-                  <SelectMenu
-                    value={tourEngine === 'claude' ? tourClaudeModel : tourCodexModel}
-                    options={tourEngine === 'claude' ? TOUR_CLAUDE_MODELS : CODEX_MODELS}
-                    onChange={tourEngine === 'claude' ? setTourClaudeModel : setTourCodexModel}
-                  />
-                </ConfigRow>
+                {tourEngine === 'claude' && (
+                  <ConfigRow label="Model" stacked>
+                    <SelectMenu
+                      value={tourClaudeModel}
+                      options={TOUR_CLAUDE_MODELS}
+                      onChange={setTourClaudeModel}
+                    />
+                  </ConfigRow>
+                )}
+                {tourEngine === 'codex' && (
+                  <ConfigRow label="Model" stacked>
+                    <SelectMenu
+                      value={tourCodexModel}
+                      options={CODEX_MODELS}
+                      onChange={setTourCodexModel}
+                    />
+                  </ConfigRow>
+                )}
+                {tourEngine === 'pi' && (
+                  <>
+                    <ConfigRow label="Model" stacked>
+                      <SelectMenu value={tourPiModel} options={piModelOptions} onChange={setTourPiModel} />
+                    </ConfigRow>
+                    <ConfigRow label="Thinking" stacked>
+                      <SegmentedPicker options={PI_THINKING} value={tourPiThinking} onChange={setTourPiThinking} />
+                    </ConfigRow>
+                  </>
+                )}
 
                 {/* Claude-only: effort level */}
                 {tourEngine === 'claude' && (

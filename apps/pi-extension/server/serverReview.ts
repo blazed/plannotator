@@ -547,6 +547,8 @@ export async function startReviewServer(options: {
 			}
 
 			if (provider === "pi") {
+				const model = typeof config?.model === "string" && config.model ? config.model : undefined;
+				const effort = typeof config?.effort === "string" && config.effort ? config.effort : undefined;
 				const prompt = PI_REVIEW_PROMPT + "\n\n---\n\n" + buildPiReviewUserMessage({
 					patch: currentPatch,
 					workspace: workspacePrompt,
@@ -554,8 +556,8 @@ export async function startReviewServer(options: {
 					diffType: currentDiffType as DiffType,
 					options: userMessageOptions,
 				});
-				const { command, promptPath } = await buildPiCommand({ cwd, prompt });
-				return { command, outputPath: promptPath, prompt, cwd, label: jobLabel, captureStdout: true, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
+				const { command, promptPath } = await buildPiCommand({ cwd, prompt, model, thinking: effort });
+				return { command, outputPath: promptPath, prompt, cwd, label: jobLabel, captureStdout: true, model, effort, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
 			}
 
 			return null;
