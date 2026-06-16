@@ -213,6 +213,34 @@ afterEach(() => {
   }
 });
 
+describe("pi plan server", () => {
+  test("captures the requested approval session mode", async () => {
+    process.env.PLANNOTATOR_DATA_DIR = makeTempDir("plannotator-pi-plan-data-");
+
+    const server = await startPlanReviewServer({
+      plan: "# Test plan\n\n- [ ] Implement it",
+      origin: "pi",
+      htmlContent: "<!doctype html><html><body>plan</body></html>",
+    });
+
+    try {
+      const response = await fetch(`${server.url}/api/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ approvalSession: "fresh" }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(server.waitForDecision()).resolves.toMatchObject({
+        approved: true,
+        approvalSession: "fresh",
+      });
+    } finally {
+      server.stop();
+    }
+  });
+});
+
 describe("pi review server", () => {
   const testIfJj = hasJj() ? test : test.skip;
   const semanticRawPatch = [

@@ -15,6 +15,7 @@ import { ConfirmDialog } from '@plannotator/ui/components/ConfirmDialog';
 import { Annotation, AnnotationType, Block, EditorMode, type CodeAnnotation, type InputMethod, type ImageAttachment, type ActionsLabelMode } from '@plannotator/ui/types';
 import { ThemeProvider } from '@plannotator/ui/components/ThemeProvider';
 import { Tooltip, TooltipProvider } from '@plannotator/ui/components/Tooltip';
+import type { ApprovalSessionMode } from '@plannotator/ui/components/ApproveSessionDropdown';
 import { AnnotationToolstrip } from '@plannotator/ui/components/AnnotationToolstrip';
 import { StickyHeaderLane } from '@plannotator/ui/components/StickyHeaderLane';
 import { TaterSpriteRunning } from '@plannotator/ui/components/TaterSpriteRunning';
@@ -1970,7 +1971,7 @@ const App: React.FC = () => {
   };
 
   // API mode handlers
-  const handleApprove = async () => {
+  const handleApprove = async (approvalSession: ApprovalSessionMode = 'current') => {
     setIsSubmitting(true);
     try {
       // Integrations must describe the same document the feedback diff does —
@@ -1987,11 +1988,16 @@ const App: React.FC = () => {
         : autoSaveResultsRef.current;
 
       // Build request body - include integrations if enabled
-      const body: { obsidian?: object; bear?: object; octarine?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string } = {};
+      const body: { obsidian?: object; bear?: object; octarine?: object; feedback?: string; agentSwitch?: string; planSave?: { enabled: boolean; customPath?: string }; permissionMode?: string; approvalSession?: ApprovalSessionMode } = {};
 
       // Include permission mode for Claude Code
       if (origin === 'claude-code') {
         body.permissionMode = permissionMode;
+      }
+
+      // Include Pi-only implementation session preference
+      if (origin === 'pi') {
+        body.approvalSession = approvalSession;
       }
 
       const effectiveAgent = getEffectiveAgentName(getAgentSwitchSettings());
@@ -2965,7 +2971,7 @@ const App: React.FC = () => {
     sendFeedback();
   }, [hasFeedbackToSend, maybeConfirmUnsavedSourceFileEdits]);
 
-  const handleHeaderApprove = useCallback(() => {
+  const handleHeaderApprove = useCallback((approvalSession?: ApprovalSessionMode) => {
     const approve = () => {
       const h = headerHandlersRef.current;
       if (annotateMode) {
@@ -2989,7 +2995,7 @@ const App: React.FC = () => {
           return;
         }
       }
-      h.handleApprove();
+      h.handleApprove(approvalSession);
     };
     if (maybeConfirmUnsavedSourceFileEdits('approve', approve)) return;
     approve();

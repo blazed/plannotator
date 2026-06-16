@@ -4,6 +4,7 @@ import type { Agent } from '@plannotator/ui/hooks/useAgents';
 import type { UpdateInfo } from '@plannotator/ui/hooks/useUpdateCheck';
 import { FeedbackButton, ApproveButton, ExitButton } from '@plannotator/ui/components/ToolbarButtons';
 import { ApproveDropdown } from '@plannotator/ui/components/ApproveDropdown';
+import { ApproveSessionDropdown, type ApprovalSessionMode } from '@plannotator/ui/components/ApproveSessionDropdown';
 import { Settings } from '@plannotator/ui/components/Settings';
 import { PlanHeaderMenu } from '@plannotator/ui/components/PlanHeaderMenu';
 import type { CallbackConfig } from '@plannotator/ui/utils/callback';
@@ -60,7 +61,7 @@ interface AppHeaderProps {
   onAnnotateFeedback: () => void;
   onAnnotateApprove: () => void;
   onFeedback: () => void;
-  onApprove: () => void;
+  onApprove: (mode?: ApprovalSessionMode) => void;
   onAnnotationPanelToggle: () => void;
   onAIChatToggle: () => void;
   onArchiveCopy: () => void;
@@ -267,15 +268,21 @@ export const AppHeader = React.memo<AppHeaderProps>(({
             {(!annotateMode || gate) && (
               origin === 'opencode' && !annotateMode && availableAgents.length > 0 ? (
                 <ApproveDropdown
-                  onApprove={onApprove}
+                  onApprove={() => onApprove()}
                   agents={availableAgents}
+                  disabled={isSubmitting}
+                  isLoading={isSubmitting}
+                />
+              ) : origin === 'pi' && !annotateMode ? (
+                <ApproveSessionDropdown
+                  onApprove={onApprove}
                   disabled={isSubmitting}
                   isLoading={isSubmitting}
                 />
               ) : (
                 <div className="relative group/approve">
                   <ApproveButton
-                    onClick={onApprove}
+                    onClick={() => onApprove()}
                     disabled={isSubmitting || (annotateMode && isExiting)}
                     isLoading={isSubmitting}
                     dimmed={!annotateMode && (origin === 'claude-code' || origin === 'gemini-cli') && showAnnotationsWarning}

@@ -59,6 +59,7 @@ export interface PlanReviewDecision {
 	savedPath?: string;
 	agentSwitch?: string;
 	permissionMode?: string;
+	approvalSession?: "current" | "fresh";
 }
 
 export interface PlanServerResult {
@@ -338,6 +339,7 @@ export async function startPlanReviewServer(options: {
 			let requestedPermissionMode: string | undefined;
 			let planSaveEnabled = true;
 			let planSaveCustomPath: string | undefined;
+			let approvalSession: "current" | "fresh" = "current";
 			try {
 				const body = await parseBody(req);
 				if (body.feedback) feedback = body.feedback as string;
@@ -349,6 +351,7 @@ export async function startPlanReviewServer(options: {
 					planSaveEnabled = ps.enabled;
 					planSaveCustomPath = ps.customPath;
 				}
+				if (body.approvalSession === "fresh") approvalSession = "fresh";
 				// Run note integrations in parallel
 				const integrationResults: Record<string, IntegrationResult> = {};
 				const integrationPromises: Promise<void>[] = [];
@@ -405,6 +408,7 @@ export async function startPlanReviewServer(options: {
 				savedPath,
 				agentSwitch,
 				permissionMode: effectivePermissionMode,
+				approvalSession,
 			});
 			json(res, { ok: true, savedPath });
 		} else if (url.pathname === "/api/deny" && req.method === "POST") {

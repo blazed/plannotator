@@ -102,7 +102,17 @@ type SavedPhaseState = {
 type PersistedPlannotatorState = {
 	phase: Phase;
 	lastSubmittedPath?: string;
-	savedState?: SavedPhaseState;
+	savedState?: SavedPhaseState | null;
+};
+
+type ApprovalSessionMode = "current" | "fresh";
+const FRESH_CONTINUATION_COMMAND = "/plannotator-continue-approved-plan";
+
+type PendingApprovedPlanContinuation = {
+	mode: ApprovalSessionMode;
+	planFilePath: string;
+	kickoffMessage: string;
+	queued?: boolean;
 };
 
 function getPlanReviewAvailabilityWarning(options: { hasUI: boolean; hasPlanHtml: boolean }): string | null {
@@ -244,7 +254,7 @@ export default function plannotator(pi: ExtensionAPI): void {
 	let checklistItems: ChecklistItem[] = [];
 	let savedState: SavedPhaseState | null = null;
 	let plannotatorConfig: PlannotatorConfig = {};
-	let justApprovedPlan = false;
+	let pendingApprovedPlanContinuation: PendingApprovedPlanContinuation | null = null;
 
 	pi.on("session_start", (_event, ctx) => {
 		currentPiSession.update(ctx);
@@ -300,6 +310,34 @@ export default function plannotator(pi: ExtensionAPI): void {
 		const projectSlug = sanitizePlanPathComponent(basename(ctx.cwd));
 		const example = join(planRoot, projectSlug, "<session-or-task-slug>.md");
 		return `Use a session-unique markdown plan file under the configured external plan root, preferably ${example}. Do not reuse a fixed PLAN.md when multiple plans may coexist.`;
+	}
+
+	function promptForFreshSessionContinuation(ctx: ExtensionContext): void {
+		// pi.sendUserMessage() deliberately bypasses slash-command handling, so
+		// this handoff must be user-submitted instead of sent as an extension
+		// prompt. Otherwise the old agent receives the internal command text.
+		let canWriteEditor = false;
+		try {
+			canWriteEditor = ctx.ui.getEditorText().trim().length === 0;
+		} catch {
+			canWriteEditor = false;
+		}
+
+		if (canWriteEditor) {
+			try {
+				ctx.ui.setEditorText(FRESH_CONTINUATION_COMMAND);
+				safeNotify(ctx, "Plannotator: press Enter to start the approved plan in a fresh session.", "info");
+				return;
+			} catch {
+				// Fall through to the notification-only path below.
+			}
+		}
+
+		safeNotify(
+			ctx,
+			`Plannotator: run ${FRESH_CONTINUATION_COMMAND} to start the approved plan in a fresh session.`,
+			"info",
+		);
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -774,6 +812,42 @@ export default function plannotator(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand(FRESH_CONTINUATION_COMMAND.slice(1), {
+		description: "Continue the last approved Plannotator plan in a fresh session",
+		handler: async (_args, ctx) => {
+			const pending = pendingApprovedPlanContinuation;
+			if (!pending || pending.mode !== "fresh") {
+				ctx.ui.notify("No approved Plannotator plan is waiting for a fresh session.", "warning");
+				return;
+			}
+
+			pendingApprovedPlanContinuation = null;
+			const parentSession = ctx.sessionManager.getSessionFile();
+			const result = await ctx.newSession({
+				parentSession,
+				setup: async (sessionManager) => {
+					sessionManager.appendCustomEntry("plannotator", {
+						phase: "executing",
+						lastSubmittedPath: pending.planFilePath,
+						savedState: null,
+					} satisfies PersistedPlannotatorState);
+					sessionManager.appendCustomEntry("plannotator-execute", {
+						lastSubmittedPath: pending.planFilePath,
+					});
+				},
+				withSession: async (replacementCtx) => {
+					replacementCtx.ui.notify("Plannotator: starting approved plan in a fresh session.", "info");
+					await replacementCtx.sendUserMessage(pending.kickoffMessage);
+				},
+			});
+
+			if (result.cancelled) {
+				pendingApprovedPlanContinuation = { ...pending, queued: false };
+				ctx.ui.notify("Fresh-session approval was cancelled.", "warning");
+			}
+		},
+	});
+
 	// ── plannotator_submit_plan Tool ────────────────────────────────────
 
 	pi.registerTool({
@@ -892,7 +966,11 @@ export default function plannotator(pi: ExtensionAPI): void {
 				await applyPhaseConfig(ctx, { restoreSavedState: true });
 				pi.appendEntry("plannotator-execute", { lastSubmittedPath });
 				persistState();
-				justApprovedPlan = true;
+				pendingApprovedPlanContinuation = {
+					mode: "current",
+					planFilePath: inputPath,
+					kickoffMessage: "Continue with the approved plan.",
+				};
 				return {
 					content: [
 						{
@@ -918,45 +996,67 @@ export default function plannotator(pi: ExtensionAPI): void {
 			}
 
 			if (result.approved) {
-				phase = "executing";
-				await applyPhaseConfig(ctx, { restoreSavedState: true });
-				pi.appendEntry("plannotator-execute", { lastSubmittedPath });
-				persistState();
-				justApprovedPlan = true;
-
+				const approvalSession: ApprovalSessionMode = result.approvalSession === "fresh" ? "fresh" : "current";
 				const doneMsg =
 					checklistItems.length > 0
 						? `After completing each step, include [DONE:n] in your response where n is the step number.`
 						: "";
+				const approvalPrompt = result.feedback
+					? getPlanApprovedWithNotesPrompt("pi", loadConfig(), {
+						planFilePath: inputPath,
+						doneMsg,
+						feedback: result.feedback,
+					})
+					: getPlanApprovedPrompt("pi", loadConfig(), {
+						planFilePath: inputPath,
+						doneMsg,
+					});
 
-				if (result.feedback) {
+				if (approvalSession === "fresh") {
+					phase = "idle";
+					checklistItems = [];
+					lastSubmittedPath = null;
+					await restoreSavedState(ctx);
+					savedState = null;
+					updateStatus(ctx);
+					updateWidget(ctx);
+					persistState();
+					pendingApprovedPlanContinuation = {
+						mode: "fresh",
+						planFilePath: inputPath,
+						kickoffMessage: approvalPrompt,
+					};
+
 					return {
 						content: [
 							{
 								type: "text",
-								text: getPlanApprovedWithNotesPrompt("pi", loadConfig(), {
-									planFilePath: inputPath,
-									doneMsg,
-									feedback: result.feedback,
-								}),
+								text: "Plan approved. Press Enter in Pi to start implementation in a fresh session.",
 							},
 						],
-						details: { approved: true, feedback: result.feedback },
+						details: { approved: true, feedback: result.feedback, approvalSession },
 						terminate: true,
 					};
 				}
+
+				phase = "executing";
+				await applyPhaseConfig(ctx, { restoreSavedState: true });
+				pi.appendEntry("plannotator-execute", { lastSubmittedPath });
+				persistState();
+				pendingApprovedPlanContinuation = {
+					mode: "current",
+					planFilePath: inputPath,
+					kickoffMessage: "Continue with the approved plan.",
+				};
 
 				return {
 					content: [
 						{
 							type: "text",
-							text: getPlanApprovedPrompt("pi", loadConfig(), {
-								planFilePath: inputPath,
-								doneMsg,
-							}),
+							text: approvalPrompt,
 						},
 					],
-					details: { approved: true },
+					details: { approved: true, feedback: result.feedback, approvalSession },
 					terminate: true,
 				};
 			}
@@ -1198,8 +1298,8 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 
 	// Detect execution completion
 	pi.on("agent_end", async (_event, ctx) => {
-		if (phase === "executing" && justApprovedPlan) {
-			justApprovedPlan = false;
+		const pendingContinuation = pendingApprovedPlanContinuation;
+		if (pendingContinuation) {
 			let attempts = 0;
 			const continueWhenIdle = (): void => {
 				if (!ctx.isIdle()) {
@@ -1207,7 +1307,14 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 					if (attempts <= 200) setTimeout(continueWhenIdle, 50);
 					return;
 				}
-				pi.sendUserMessage("Continue with the approved plan.");
+				if (pendingContinuation.mode === "fresh") {
+					if (pendingContinuation.queued) return;
+					pendingContinuation.queued = true;
+					promptForFreshSessionContinuation(ctx);
+					return;
+				}
+				pendingApprovedPlanContinuation = null;
+				pi.sendUserMessage(pendingContinuation.kickoffMessage);
 			};
 			setTimeout(continueWhenIdle, 0);
 			return;
@@ -1302,9 +1409,6 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 				phase = "idle";
 			}
 		}
-
-
-
 		if (phase === "planning") {
 			checklistItems = [];
 			const warning = getPlanReviewAvailabilityWarning({ hasUI: ctx.hasUI, hasPlanHtml: hasPlanBrowserHtml() });
@@ -1324,6 +1428,7 @@ Execute each step in order. After completing a step, include [DONE:n] in your re
 				pi.setActiveTools(stripPlanningOnlyTools(pi.getActiveTools()));
 			}
 		} else if (phase === "planning" || phase === "executing") {
+			if (!savedState) captureSavedState(ctx);
 			await applyPhaseConfig(ctx, { restoreSavedState: true });
 		}
 

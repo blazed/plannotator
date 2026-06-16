@@ -57,7 +57,7 @@ In plan mode the agent is restricted — destructive commands are blocked, write
 
 When the agent calls `plannotator_submit_plan`, the Plannotator UI opens in your browser. You can:
 
-- **Approve** the plan to begin execution
+- **Approve** the plan to begin execution in the current session, or choose **Fresh session** from the approve menu to prefill a fresh-session handoff command in Pi (press Enter to start with only the approved plan)
 - **Deny with annotations** to send structured feedback back to the agent
 - **Approve with notes** to proceed but include implementation guidance
 
@@ -189,7 +189,7 @@ Plan review is asynchronous:
 
 - callers send `plannotator:request` with action `plan-review`
 - Plannotator opens the browser review and immediately responds with `{ status: "handled", result: { status: "pending", reviewId } }`
-- when the human approves or rejects in the browser, Plannotator emits `plannotator:review-result` with `{ reviewId, approved, feedback, savedPath?, agentSwitch?, permissionMode? }`
+- when the human approves or rejects in the browser, Plannotator emits `plannotator:review-result` with `{ reviewId, approved, feedback, savedPath?, agentSwitch?, permissionMode?, approvalSession? }`
 - callers can query `review-status` with the same `reviewId` to recover from startup races or session restarts
 
 The other shared actions remain request/response flows. Payloads are intentionally minimal and only include fields the shared implementation actually uses.

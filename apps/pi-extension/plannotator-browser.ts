@@ -47,6 +47,7 @@ export interface PlanReviewDecision {
 	savedPath?: string;
 	agentSwitch?: string;
 	permissionMode?: string;
+	approvalSession?: "current" | "fresh";
 }
 
 export interface BrowserDecisionSession<T> {
@@ -298,7 +299,10 @@ export async function startCodeReviewBrowserSession(
 
 		const repoDir = options.cwd ?? ctx.cwd;
 		const detectedPrVcs = await detectManagedVcs(repoDir, "auto").catch(() => null);
-		if (shouldUseLocalPrCheckout({ ...options, detectedVcsType: detectedPrVcs?.vcsType })) {
+		const detectedVcsType = detectedPrVcs?.id === "git" || detectedPrVcs?.id === "jj" || detectedPrVcs?.id === "p4"
+			? detectedPrVcs.id
+			: undefined;
+		if (shouldUseLocalPrCheckout({ ...options, detectedVcsType })) {
 			// Create local worktree for agent file access. In JJ repos this intentionally
 			// requires --git because it uses Git checkout/worktree behavior.
 			let localPath: string | undefined;

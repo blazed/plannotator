@@ -83,6 +83,7 @@ export interface PlannotatorReviewResultEvent {
 	savedPath?: string;
 	agentSwitch?: string;
 	permissionMode?: string;
+	approvalSession?: "current" | "fresh";
 }
 
 export interface PlannotatorReviewStatusPayload {
