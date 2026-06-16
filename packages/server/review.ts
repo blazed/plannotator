@@ -50,13 +50,19 @@ import {
   parseCodexOutput,
   transformReviewFindings,
 } from "./codex-review";
-import { buildAgentReviewUserMessage, buildAgentReviewUserMessageForTarget, type WorkspaceReviewPromptContext } from "./agent-review-message";
+import { buildAgentReviewUserMessage, buildAgentReviewUserMessageForTarget, type AgentReviewUserMessageOptions, type WorkspaceReviewPromptContext } from "./agent-review-message";
 import {
   CLAUDE_REVIEW_PROMPT,
   buildClaudeCommand,
   parseClaudeStreamOutput,
   transformClaudeFindings,
 } from "./claude-review";
+import {
+  PI_REVIEW_PROMPT,
+  buildPiCommand,
+  cleanupPiPromptFile,
+  parsePiJsonReviewOutput,
+} from "./pi-review";
 import { createTourSession, TOUR_EMPTY_OUTPUT_ERROR } from "./tour/tour-review";
 import { loadConfig, saveConfig, detectGitUser, getServerConfig } from "./config";
 import { type PRMetadata, type PRReviewFileComment, type PRStackTree, type PRListItem, fetchPR, fetchPRFileContent, fetchPRContext, submitPRReview, fetchPRViewedFiles, markPRFilesViewed, fetchPRStack, fetchPRList, getPRUser, parsePRUrl, prRefFromMetadata, isSameProject, getDisplayRepo, getMRLabel, getMRNumberLabel } from "./pr";
@@ -527,6 +533,18 @@ export async function startReviewServer(
         return { command, stdinPrompt, prompt, cwd, label: jobLabel, captureStdout: true, model, effort, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
       }
 
+      if (provider === "pi") {
+        const prompt = PI_REVIEW_PROMPT + "\n\n---\n\n" + buildPiReviewUserMessage({
+          patch: launchPatch,
+          workspace: workspacePrompt,
+          prMetadata: launchMetadata,
+          diffType: launchDiffType as DiffType,
+          options: userMessageOptions,
+        });
+        const { command, promptPath } = await buildPiCommand({ cwd, prompt });
+        return { command, outputPath: promptPath, prompt, cwd, label: jobLabel, captureStdout: true, prUrl: launchPrUrl, diffScope: launchDiffScope, diffContext };
+      }
+
       return null;
     },
 
@@ -596,6 +614,37 @@ export async function startReviewServer(
             .map(a => ({ ...a, ...jobPrContext, ...(jobDiffScope && { diffScope: jobDiffScope }) }));
           const result = externalAnnotations.addAnnotations({ annotations });
           if ("error" in result) console.error(`[claude-review] addAnnotations error:`, result.error);
+        }
+        return;
+      }
+
+      if (job.provider === "pi") {
+        await cleanupPiPromptFile(meta.outputPath);
+        const stdout = meta.stdout ?? "";
+        const output = parsePiJsonReviewOutput(stdout);
+        if (!output) {
+          console.error(`[pi-review] Failed to parse output (${stdout.length} bytes, last 200: ${stdout.slice(-200)})`);
+          return;
+        }
+
+        const total = output.summary.important + output.summary.nit + output.summary.pre_existing;
+        job.summary = {
+          correctness: output.summary.important === 0 ? "Correct" : "Issues Found",
+          explanation: `${output.summary.important} important, ${output.summary.nit} nit, ${output.summary.pre_existing} pre-existing`,
+          confidence: total === 0 ? 1.0 : Math.max(0, 1.0 - (output.summary.important * 0.2)),
+        };
+
+        if (output.findings.length > 0) {
+          const annotations = transformClaudeFindings(
+            output.findings,
+            job.source,
+            cwd,
+            workspace ? (filePath) => workspace.normalizeAnnotationPath(filePath) : undefined,
+            "Pi",
+          )
+            .map(a => ({ ...a, ...jobPrContext, ...(jobDiffScope && { diffScope: jobDiffScope }) }));
+          const result = externalAnnotations.addAnnotations({ annotations });
+          if ("error" in result) console.error(`[pi-review] addAnnotations error:`, result.error);
         }
         return;
       }
@@ -1607,4 +1656,35 @@ export async function startReviewServer(
       }
     },
   };
+}
+
+function buildPiReviewUserMessage(args: {
+  patch: string;
+  workspace?: WorkspaceReviewPromptContext | null;
+  prMetadata?: PRMetadata;
+  diffType: DiffType;
+  options: AgentReviewUserMessageOptions;
+}): string {
+  if (args.workspace) {
+    return buildAgentReviewUserMessageForTarget({
+      kind: "workspace",
+      patch: args.patch,
+      workspace: args.workspace,
+    });
+  }
+
+  const base = buildAgentReviewUserMessage(args.patch, args.diffType, args.options, args.prMetadata);
+  const includesPatch = base.includes("```diff") || base.includes(args.patch);
+  if (includesPatch) return base;
+
+  return [
+    base,
+    "",
+    "The diff is included below because this Pi review job is intentionally read-only and cannot run git/jj commands.",
+    "Use read/grep/find/ls only if you need surrounding context.",
+    "",
+    "```diff",
+    args.patch,
+    "```",
+  ].join("\n");
 }

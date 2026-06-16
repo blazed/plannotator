@@ -9,6 +9,7 @@
  */
 
 import { formatClaudeLogEvent } from "./claude-review";
+import { formatPiJsonLogEvent } from "./pi-review";
 import {
   type AgentJobInfo,
   type AgentJobEvent,
@@ -109,6 +110,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
   const capabilities: AgentCapability[] = [
     { id: "claude", name: "Claude Code", available: !!Bun.which("claude") },
     { id: "codex", name: "Codex CLI", available: !!Bun.which("codex") },
+    { id: "pi", name: "Pi", available: !!Bun.which("pi") },
     { id: "tour", name: "Code Tour", available: !!Bun.which("claude") || !!Bun.which("codex") },
   ];
   const capabilitiesResponse: AgentCapabilities = {
@@ -251,6 +253,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions): AgentJob
                     const formatted = formatClaudeLogEvent(line);
                     if (formatted !== null) {
                       broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+                    }
+                    continue;
+                  }
+                  if (provider === "pi") {
+                    const formatted = formatPiJsonLogEvent(line);
+                    if (formatted !== null) {
+                      broadcast({ type: "job:log", jobId: id, delta: formatted });
                     }
                     continue;
                   }

@@ -283,6 +283,7 @@ export function transformClaudeFindings(
   source: string,
   cwd?: string,
   pathTransform?: (path: string) => string,
+  author = "Claude Code",
 ): Array<{
   source: string;
   filePath: string;
@@ -311,7 +312,7 @@ export function transformClaudeFindings(
       text: `[${f.severity}] ${f.description}`,
       severity: f.severity,
       reasoning: f.reasoning,
-      author: "Claude Code",
+      author,
     }));
 }
 

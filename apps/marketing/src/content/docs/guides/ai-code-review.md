@@ -1,6 +1,6 @@
 ---
 title: "AI Code Review Agents"
-description: "Automated code review using Codex and Claude Code agents with live findings, severity classification, and full prompt transparency."
+description: "Automated code review using Codex, Claude Code, and Pi agents with live findings, severity classification, and full prompt transparency."
 sidebar:
   order: 26
 section: "Guides"
@@ -8,17 +8,18 @@ section: "Guides"
 
 Launch AI review agents from the Plannotator diff viewer. Agents analyze your changes in the background and produce structured findings inline.
 
-Two providers are supported:
+Three providers are supported:
 
 - **Codex CLI** uses priority-based findings (P0 through P3)
 - **Claude Code** uses a multi-agent pipeline with severity-based findings (Important, Nit, Pre-existing)
+- **Pi** uses Pi's local coding-agent CLI in JSON mode with a read-only tool allowlist and severity-based findings
 
-Both integrations are derived from official tooling. Claude's review model is based on Anthropic's [Claude Code Review](https://code.claude.com/docs/en/code-review) service and the open-source [code-review plugin](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md). Codex uses [OpenAI Codex CLI](https://github.com/openai/codex) structured output.
+All integrations are derived from official tooling. Claude's review model is based on Anthropic's [Claude Code Review](https://code.claude.com/docs/en/code-review) service and the open-source [code-review plugin](https://github.com/anthropics/claude-code/blob/main/plugins/code-review/README.md). Codex uses [OpenAI Codex CLI](https://github.com/openai/codex) structured output. Pi uses [Pi RPC/JSON mode](https://pi.dev) and the local model/provider configuration already available to your `pi` CLI.
 
 ## Flow
 
-1. Click **Run Agent** in the Agents tab (choose Codex or Claude)
-2. The server builds the command with the appropriate prompt and schema
+1. Click **Run Agent** in the Agents tab (choose Codex, Claude, or Pi)
+2. The server builds the command with the appropriate prompt, schema, and tool policy
 3. Agent runs in the background; live logs stream to the Logs tab
 4. On completion, findings are parsed and appear as inline annotations
 
@@ -33,11 +34,11 @@ Layer review is best for avoiding duplicate feedback on parent PRs. Full stack r
 
 ## Findings
 
-Each finding includes a file path, line range, description, and severity or priority. Claude findings also include a reasoning trace that explains how the issue was verified.
+Each finding includes a file path, line range, description, and severity or priority. Claude and Pi findings also include a reasoning trace that explains how the issue was verified.
 
 Click any finding to navigate to the relevant file and line. Use the copy button on individual findings or "Copy All" to export as markdown.
 
-### Severity (Claude)
+### Severity (Claude and Pi)
 
 | Level | Meaning |
 |-------|---------|
@@ -65,7 +66,7 @@ Cleaned up when the session ends. Use `--no-local` to review in remote-only mode
 
 ## Transparency
 
-Agents are read-only. They cannot modify code, access the network, or post comments. All AI communication goes directly to your provider (Anthropic or OpenAI). No code passes through Plannotator servers. Prompts and commands are visible in the review UI.
+Agents are launched locally. No code passes through Plannotator servers; AI communication goes directly through your installed CLIs to their configured providers. Pi reviews are tool-limited to `read`, `grep`, `find`, and `ls` and run with extensions and skills disabled. Prompts and commands are visible in the review UI.
 
 Below are the exact prompts, commands, and schemas used.
 
@@ -74,6 +75,9 @@ Below are the exact prompts, commands, and schemas used.
 - [Codex: full prompt](#codex-full-prompt)
 - [Codex: command](#codex-command)
 - [Codex: output schema](#codex-output-schema)
+- [Pi: full prompt](#pi-full-prompt)
+- [Pi: command](#pi-command)
+- [Pi: output schema](#pi-output-schema)
 
 ---
 
@@ -307,9 +311,116 @@ codex exec \
 }
 ```
 
+### Pi: full prompt
+
+```text
+# Pi Code Review System Prompt
+
+## Identity
+You are a code review system. Your job is to find bugs that would break
+production. You are not a linter, formatter, or style checker unless project
+guidance files explicitly expand your scope.
+
+## Tool policy
+You are running as a read-only Plannotator review agent. You may inspect local
+files with read, grep, find, and ls only. Do not attempt to edit files, write
+files, run shell commands, access the network, or post comments to GitHub or
+GitLab. If needed context is unavailable with read-only tools, say so in the
+reasoning for the relevant finding or return no finding.
+
+## Review pipeline
+1. Read the supplied diff and task context carefully.
+2. Inspect nearby code with read/grep/find/ls when needed to prove a finding.
+3. Check repository guidance files that are already in context and any relevant
+   nearby AGENTS.md, CLAUDE.md, or REVIEW.md files discoverable with read-only
+   tools.
+4. Flag only actionable issues the original author would likely fix.
+5. Prefer silence over false positives. Drop speculative or unproven issues.
+
+## Severity
+Assign exactly one severity to each finding:
+
+- important: A bug that should be fixed before merging. Build failures, clear
+  logic errors, security vulnerabilities with exploit paths, data loss risks, or
+  race conditions with observable consequences.
+- nit: A minor issue worth fixing but non-blocking. Style or convention issues
+  only count when project guidance explicitly says they matter.
+- pre_existing: A bug in the surrounding codebase that was NOT introduced by
+  this change. Only include it when directly relevant to changed code.
+
+## Finding rules
+- One finding per distinct issue.
+- Use the shortest line range that pinpoints the problem, preferably 1-5 lines.
+- File paths must match the diff paths. In workspace reviews, keep the child
+  repository prefix exactly as shown in the diff.
+- Do not flag missing tests unless project guidance explicitly requires them.
+- Do not approve, reject, summarize, or post external comments.
+- Do not include markdown fences, prose before JSON, or prose after JSON.
+
+## Output schema
+Your only output is one JSON object matching this schema:
+
+{"type":"object","properties":{"findings":{"type":"array","items":{"type":"object","properties":{"severity":{"type":"string","enum":["important","nit","pre_existing"]},"file":{"type":"string"},"line":{"type":"integer"},"end_line":{"type":"integer"},"description":{"type":"string"},"reasoning":{"type":"string"}},"required":["severity","file","line","end_line","description","reasoning"],"additionalProperties":false}},"summary":{"type":"object","properties":{"important":{"type":"integer"},"nit":{"type":"integer"},"pre_existing":{"type":"integer"}},"required":["important","nit","pre_existing"],"additionalProperties":false}},"required":["findings","summary"],"additionalProperties":false}
+
+If no issues are found, return:
+{"findings":[],"summary":{"important":0,"nit":0,"pre_existing":0}}
+```
+
+### Pi: command
+
+```bash
+pi --mode json \
+  --no-session \
+  --name "Plannotator code review" \
+  --tools read,grep,find,ls \
+  --no-extensions \
+  --no-skills \
+  @/tmp/plannotator-pi-review-<uuid>.md
+```
+
+The temporary `@...md` prompt file contains the full Pi review prompt above, a separator, and the diff-specific user message. For local Git/JJ review types, Plannotator embeds the patch in the prompt because this Pi job is intentionally unable to run `git`, `jj`, or shell commands.
+
+### Pi: output schema
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": { "type": "string", "enum": ["important", "nit", "pre_existing"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "end_line": { "type": "integer" },
+          "description": { "type": "string" },
+          "reasoning": { "type": "string" }
+        },
+        "required": ["severity", "file", "line", "end_line", "description", "reasoning"],
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "important": { "type": "integer" },
+        "nit": { "type": "integer" },
+        "pre_existing": { "type": "integer" }
+      },
+      "required": ["important", "nit", "pre_existing"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["findings", "summary"],
+  "additionalProperties": false
+}
+```
+
 ## Customization
 
-Add `CLAUDE.md` or `REVIEW.md` to your repo root or any subdirectory. The Claude agent reads them to understand project rules.
+Add `CLAUDE.md` or `REVIEW.md` to your repo root or any subdirectory. Review agents use them to understand project rules when they are present in context or discoverable with their allowed tools.
 
 ```markdown
 # Review Rules

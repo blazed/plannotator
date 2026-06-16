@@ -21,6 +21,7 @@ import {
 	AGENT_HEARTBEAT_INTERVAL_MS,
 } from "../generated/agent-jobs.js";
 import { formatClaudeLogEvent } from "../generated/claude-review.js";
+import { formatPiJsonLogEvent } from "../generated/pi-review.js";
 import { json, parseBody } from "./helpers.js";
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 	const capabilities: AgentCapability[] = [
 		{ id: "claude", name: "Claude Code", available: whichCmd("claude") },
 		{ id: "codex", name: "Codex CLI", available: whichCmd("codex") },
+		{ id: "pi", name: "Pi", available: whichCmd("pi") },
 		{ id: "tour", name: "Code Tour", available: whichCmd("claude") || whichCmd("codex") },
 	];
 	const capabilitiesResponse: AgentCapabilities = {
@@ -199,6 +201,13 @@ export function createAgentJobHandler(options: AgentJobHandlerOptions) {
 							const formatted = formatClaudeLogEvent(line);
 							if (formatted !== null) {
 								broadcast({ type: "job:log", jobId: id, delta: formatted + '\n' });
+							}
+							continue;
+						}
+						if (provider === "pi") {
+							const formatted = formatPiJsonLogEvent(line);
+							if (formatted !== null) {
+								broadcast({ type: "job:log", jobId: id, delta: formatted });
 							}
 							continue;
 						}

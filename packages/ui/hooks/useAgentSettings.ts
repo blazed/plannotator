@@ -25,7 +25,7 @@ interface CodexSection {
 }
 
 export type AgentMode = 'review' | 'tour';
-export type AgentEngine = 'claude' | 'codex';
+export type AgentEngine = 'claude' | 'codex' | 'pi';
 
 interface AgentSettingsState {
   selectedMode?: AgentMode;
@@ -67,7 +67,8 @@ export function sanitizeCodexPerModel(
 }
 
 function parseEngine(value: unknown): AgentEngine {
-  return value === 'codex' ? 'codex' : 'claude';
+  if (value === 'codex' || value === 'pi') return value;
+  return 'claude';
 }
 
 function parseMode(value: unknown): AgentMode | undefined {

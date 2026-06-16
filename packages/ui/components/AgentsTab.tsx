@@ -76,6 +76,7 @@ const MODE_LABEL: Record<AgentMode, string> = {
 const ENGINE_LABEL: Record<AgentEngine, string> = {
   claude: 'Claude',
   codex: 'Codex',
+  pi: 'Pi',
 };
 
 interface AgentsTabProps {
@@ -398,9 +399,18 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
 
   const claudeAvailable = capabilities?.providers.some((p) => p.id === 'claude' && p.available) ?? false;
   const codexAvailable = capabilities?.providers.some((p) => p.id === 'codex' && p.available) ?? false;
+  const piAvailable = capabilities?.providers.some((p) => p.id === 'pi' && p.available) ?? false;
   const tourAvailable = capabilities?.providers.some((p) => p.id === 'tour' && p.available) ?? false;
 
-  const availableEngines = useMemo<AgentEngine[]>(() => {
+  const availableReviewEngines = useMemo<AgentEngine[]>(() => {
+    const engines: AgentEngine[] = [];
+    if (claudeAvailable) engines.push('claude');
+    if (codexAvailable) engines.push('codex');
+    if (piAvailable) engines.push('pi');
+    return engines;
+  }, [claudeAvailable, codexAvailable, piAvailable]);
+
+  const availableTourEngines = useMemo<AgentEngine[]>(() => {
     const engines: AgentEngine[] = [];
     if (claudeAvailable) engines.push('claude');
     if (codexAvailable) engines.push('codex');
@@ -409,14 +419,15 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
 
   const availableModes = useMemo<AgentMode[]>(() => {
     const modes: AgentMode[] = [];
-    if (availableEngines.length > 0) modes.push('review');
-    if (tourAvailable && availableEngines.length > 0) modes.push('tour');
+    if (availableReviewEngines.length > 0) modes.push('review');
+    if (tourAvailable && availableTourEngines.length > 0) modes.push('tour');
     return modes;
-  }, [availableEngines.length, tourAvailable]);
+  }, [availableReviewEngines.length, availableTourEngines.length, tourAvailable]);
 
-  const firstAvailableEngine = availableEngines[0] ?? null;
-  const engineAvailable = (engine: AgentEngine) => engine === 'claude' ? claudeAvailable : codexAvailable;
-
+  const firstAvailableReviewEngine = availableReviewEngines[0] ?? null;
+  const firstAvailableTourEngine = availableTourEngines[0] ?? null;
+  const reviewEngineAvailable = (engine: AgentEngine) => availableReviewEngines.includes(engine);
+  const tourEngineAvailable = (engine: AgentEngine) => availableTourEngines.includes(engine);
   // Reconcile mode + engine choices against live capabilities. Runs when
   // capabilities change or the stored selection becomes invalid.
   useEffect(() => {
@@ -424,16 +435,17 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     if (!selectedMode || !availableModes.includes(selectedMode)) {
       setSelectedMode(availableModes[0]);
     }
-    if (!firstAvailableEngine) return;
-    if (!engineAvailable(reviewEngine)) setReviewEngine(firstAvailableEngine);
-    if (!engineAvailable(tourEngine)) setTourEngine(firstAvailableEngine);
+    if (firstAvailableReviewEngine && !reviewEngineAvailable(reviewEngine)) setReviewEngine(firstAvailableReviewEngine);
+    if (firstAvailableTourEngine && !tourEngineAvailable(tourEngine)) setTourEngine(firstAvailableTourEngine);
   }, [
     capabilities,
     availableModes,
-    firstAvailableEngine,
-    selectedMode,
+    firstAvailableReviewEngine,
+    firstAvailableTourEngine,
     reviewEngine,
     tourEngine,
+    availableReviewEngines,
+    availableTourEngines,
     setSelectedMode,
     setReviewEngine,
     setTourEngine,
@@ -470,13 +482,16 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     if (engine === 'claude') {
       return { provider: 'claude', label: 'Code Review', model: claudeModel, effort: claudeEffort };
     }
-    return {
-      provider: 'codex',
-      label: 'Code Review',
-      model: codexModel,
-      reasoningEffort: codexReasoning,
-      ...(codexFast && { fastMode: true }),
-    };
+    if (engine === 'codex') {
+      return {
+        provider: 'codex',
+        label: 'Code Review',
+        model: codexModel,
+        reasoningEffort: codexReasoning,
+        ...(codexFast && { fastMode: true }),
+      };
+    }
+    return { provider: 'pi', label: 'Code Review' };
   };
   const buildTourLaunch = (): LaunchParams => ({
     provider: 'tour',
@@ -489,9 +504,9 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   });
 
   const canLaunch = selectedMode === 'review'
-    ? engineAvailable(reviewEngine)
+    ? reviewEngineAvailable(reviewEngine)
     : selectedMode === 'tour'
-      ? tourAvailable && engineAvailable(tourEngine)
+      ? tourAvailable && tourEngineAvailable(tourEngine)
       : false;
 
   const handleLaunch = () => {
@@ -500,7 +515,8 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
   };
 
   const modeOptions = availableModes.map((mode) => ({ value: mode, label: MODE_LABEL[mode] }));
-  const engineOptions = availableEngines.map((engine) => ({ value: engine, label: ENGINE_LABEL[engine] }));
+  const reviewEngineOptions = availableReviewEngines.map((engine) => ({ value: engine, label: ENGINE_LABEL[engine] }));
+  const tourEngineOptions = availableTourEngines.map((engine) => ({ value: engine, label: ENGINE_LABEL[engine] }));
   const renderStaticChoice = (label: string, icon?: React.ReactNode) => (
     <div className="flex items-center gap-2 rounded-lg border border-border/30 bg-surface-1/30 px-2.5 py-1.5">
       {icon}
@@ -508,9 +524,13 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
     </div>
   );
 
-  const renderEngineSelect = (value: AgentEngine, onChange: (engine: AgentEngine) => void) => (
+  const renderEngineSelect = (
+    value: AgentEngine,
+    onChange: (engine: AgentEngine) => void,
+    engineOptions: Array<{ value: AgentEngine; label: string }>,
+  ) => (
     <ConfigRow label="Engine" stacked>
-      {availableEngines.length > 1 ? (
+      {engineOptions.length > 1 ? (
         <SelectMenu
           value={value}
           options={engineOptions}
@@ -549,7 +569,7 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
 
             {selectedMode === 'review' && (
               <>
-                {renderEngineSelect(reviewEngine, setReviewEngine)}
+                {renderEngineSelect(reviewEngine, setReviewEngine, reviewEngineOptions)}
                 {reviewEngine === 'claude' && (
                   <>
                     <ConfigRow label="Model" stacked>
@@ -573,12 +593,17 @@ export const AgentsTab: React.FC<AgentsTabProps> = ({
                     </ConfigRow>
                   </>
                 )}
+                {reviewEngine === 'pi' && (
+                  <ConfigRow label="Model">
+                    {renderStaticChoice("Pi default")}
+                  </ConfigRow>
+                )}
               </>
             )}
 
             {selectedMode === 'tour' && (
               <>
-                {renderEngineSelect(tourEngine, setTourEngine)}
+                {renderEngineSelect(tourEngine, setTourEngine, tourEngineOptions)}
                 <ConfigRow label="Model" stacked>
                   <SelectMenu
                     value={tourEngine === 'claude' ? tourClaudeModel : tourCodexModel}
